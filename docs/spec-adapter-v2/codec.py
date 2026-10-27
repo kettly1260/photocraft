@@ -358,6 +358,12 @@ def strict_decode_frame(
         if not (1 <= ch <= 5):
             raise ValueError(f"Port '{port_name}' channels ({ch}) exceed [1, 5] bound")
 
+        samples = w * h * ch
+        if samples > MAX_F32_SAMPLES:
+            raise ValueError(
+                f"Port '{port_name}' samples ({samples}) exceeds maximum allowed single tensor samples {MAX_F32_SAMPLES}"
+            )
+
         idx = port.get("data_section_index")
         if idx is not None:
             if idx < 0 or idx >= section_count:

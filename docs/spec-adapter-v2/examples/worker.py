@@ -394,6 +394,148 @@ def handle_request(
     }, []
 
 
+class WorkerSession:
+    """
+    In-process stateful worker session for lifecycle transitions and frame handling.
+
+    State transitions:
+      - UNINITIALIZED: Initial state. Only type 'hello' accepted.
+      - NEGOTIATED: Handshake negotiated. 'control' and 'run' accepted.
+      - NEEDS_MODEL: Session requires model preparation before execution.
+      - READY: Model prepared and ready for execution.
+
+    Error handling strictly conforms to wire-response.schema.json standard error codes.
+    """
+
+    def __init__(self):
+        self.state = "UNINITIALIZED"
+        self.seen_request_ids: set[str] = set()
+        self.prepared_resource_id: str | None = None
+        self.protocol_version: int | None = None
+        self.enabled_features: list[str] = []
+
+    def close(self) -> None:
+        """Explicitly close worker session and teardown resources."""
+        self.state = "CLOSED"
+        self.prepared_resource_id = None
+
+    @property
+    def is_closed(self) -> bool:
+        return self.state == "CLOSED"
+
+    def handle_request_frame(self, request_frame_bytes: bytes) -> bytes:
+        """Process a raw request frame in-process and return raw response frame bytes."""
+        magic, req_json, sections_meta, payload = strict_decode_frame(
+            request_frame_bytes, expected_magic=MAGIC_REQ
+        )
+
+        req_id = req_json.get("request_id", "req-000")
+        req_type = req_json.get("type")
+
+        # 0. Enforce closed endpoint check
+        if self.state == "CLOSED":
+            err_json: dict = {
+                "protocol": 2,
+                "request_id": req_id,
+                "type": req_type if req_type in ("hello", "control", "run") else "control",
+                "status": "error",
+                "message": "Session is closed: no further requests permitted on closed endpoint",
+                "error": {"code": "invalid_request", "retryable": False},
+                "sections": [],
+            }
+            if req_type == "control":
+                err_json["action"] = req_json.get("action", "probe")
+            return encode_frame(MAGIC_RES, err_json, [])
+
+        # 1. Enforce unique request_id in single session
+        if req_id in self.seen_request_ids:
+            err_json = {
+                "protocol": 2,
+                "request_id": req_id,
+                "type": req_type if req_type in ("hello", "control", "run") else "control",
+                "status": "error",
+                "message": f"Duplicate request_id '{req_id}' reused in same session",
+                "error": {"code": "invalid_request", "retryable": False},
+                "sections": [],
+            }
+            if req_type == "control":
+                err_json["action"] = req_json.get("action", "probe")
+            return encode_frame(MAGIC_RES, err_json, [])
+
+        # 2. Enforce session initialization via hello handshake (Control/run before negotiation closes endpoint)
+        if self.state == "UNINITIALIZED" and req_type != "hello":
+            self.state = "CLOSED"
+            err_json = {
+                "protocol": 2,
+                "request_id": req_id,
+                "type": req_type if req_type in ("hello", "control", "run") else "control",
+                "status": "error",
+                "message": "Session uninitialized: control or run before hello negotiation closes endpoint",
+                "error": {"code": "invalid_request", "retryable": False},
+                "sections": [],
+            }
+            if req_type == "control":
+                err_json["action"] = req_json.get("action", "probe")
+            self.seen_request_ids.add(req_id)
+            return encode_frame(MAGIC_RES, err_json, [])
+
+        # 3. Repeated hello handshake closes endpoint (README.md:43)
+        if self.state != "UNINITIALIZED" and req_type == "hello":
+            self.state = "CLOSED"
+            err_json = {
+                "protocol": 2,
+                "request_id": req_id,
+                "type": "hello",
+                "status": "error",
+                "message": "Repeated hello handshake forbidden: closes session endpoint",
+                "error": {"code": "invalid_request", "retryable": False},
+                "sections": [],
+            }
+            self.seen_request_ids.add(req_id)
+            return encode_frame(MAGIC_RES, err_json, [])
+
+        # 4. Model readiness guard for run
+        if req_type == "run" and self.state == "NEEDS_MODEL":
+            err_json = {
+                "protocol": 2,
+                "request_id": req_id,
+                "type": "run",
+                "status": "needs_model",
+                "message": "Model resource not prepared: session in needs_model state",
+                "error": {"code": "resource_missing", "retryable": False},
+                "sections": [],
+            }
+            self.seen_request_ids.add(req_id)
+            return encode_frame(MAGIC_RES, err_json, [])
+
+        # 4. Action execution
+        cli_action = req_type
+        if req_type == "control":
+            cli_action = req_json.get("action", "probe")
+
+        resp_json, resp_sections = handle_request(cli_action, req_json, sections_meta, payload)
+
+        # 5. State transitions on success
+        if req_type == "hello" and resp_json.get("status") == "negotiated":
+            self.state = "NEGOTIATED"
+            self.protocol_version = 2
+            self.enabled_features = resp_json.get("negotiation", {}).get("enabled_features", [])
+        elif req_type == "control":
+            ctrl_action = req_json.get("action")
+            if ctrl_action == "prepare":
+                if resp_json.get("status") == "ready":
+                    self.state = "READY"
+                    self.prepared_resource_id = req_json.get("resource", {}).get("id")
+                elif resp_json.get("status") == "needs_model":
+                    self.state = "NEEDS_MODEL"
+            elif ctrl_action == "evict":
+                self.prepared_resource_id = None
+                self.state = "NEGOTIATED"
+
+        self.seen_request_ids.add(req_id)
+        return encode_frame(MAGIC_RES, resp_json, resp_sections)
+
+
 def main():
     parser = argparse.ArgumentParser(description="PhotoCraft Adapter v2 Reference Worker")
     parser.add_argument(

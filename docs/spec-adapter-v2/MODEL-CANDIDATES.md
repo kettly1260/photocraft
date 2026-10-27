@@ -110,12 +110,19 @@
 
 ---
 
-## 四、历史 CI 证据严格隔离说明
+## 四、CI 证据定位与严格隔离说明
 
 - **Run 40075123796（commit `561a0e09`）定位**：
   - 该次运行系归档于 `qnn-review-20261023/FINAL-ARCHIVE.zh-CN.md` 中的 **QNN 独立伴生代码库（`tests/qnn_workflow_review/`）** 的 T1（纯合约校验）与 T4（ARM64 烟雾测试）证据；
-  - **严正声明**：该次运行属于此前独立门禁里程碑，**绝非** `docs/spec-adapter-v2/` 二进制向量生成或一致性套件的执行记录；
-  - 当前 `docs/spec-adapter-v2/` 规约冻结包是一个全新的、处于草案审查状态（Draft Review）的独立模块，尚未在任何 CI 运行中执行过二进制生成与一致性套件。两者绝不可混淆。
+  - **严正声明**：该次运行属于此前独立门禁里程碑，**绝非** `docs/spec-adapter-v2/` 二进制向量生成或一致性套件的执行记录；两者物理隔离，不可混淆。
+- **Run 40360311553（commit `5c10d371`）定位**：
+  - 触发工作流：`.github/workflows/adapter-spec.yml`（分支 `compat/host-neutral-adapters-v1-20261020`）；
+  - 产出工件：`adapter-v2-candidate-vectors`（ID `12668240638`，大小 8,126 字节，归档容器哈希 `sha256:cc2d7258230160c2e897c83383863da39a6210c90e86ce57cac597034c997fce`，保留期 30 天）；
+  - **范围界定**：该次运行仅为规范候选向量与草案脚本的狭窄运行证据，固定基准源与 8 个全量记录、真实目标阶段断言、严格边界正例可达性及会话状态机映射仍保持 OPEN，绝不作为 M2 规范冻结通过依据。
+- **Run 40360311691（commit `5c10d371`）定位**：
+  - 触发工作流：`.github/workflows/ci.yml`（因分支匹配 `compat/**` 自动触发）；
+  - 平台覆盖事实：Linux (`ubuntu-latest`) 与 Windows (`windows-latest`，单元测试与集成测试两路并行)；macOS 仅在 `release.yml` 构建，不参与 PR/push 测试；
+  - 运行结果：`test (windows-latest, integration)` 耗时约 45 分钟顺利通过；但整体因预存在的代码格式（Format）、Windows 单元测试及语料库下载（Corpus tests）三个历史问题失败，根因继续保持 OPEN，不擅自修改主 CI。
 
 ---
 
@@ -129,4 +136,5 @@
 | **张量规范与预处理契约** | **Delivered (已交付)** | 严格明确 `[1,3,H,W]` NCHW、RGB 通道、浮点归一化及输出掩膜区间 |
 | **QNN Context Binary 编译** | **Unfinished (未开始)** | 无真实 QDQ ONNX、未进行 Qualcomm SDK 远程交叉编译 |
 | **Snapdragon 物理 NPU 推理** | **Unfinished (未完成)** | 真实硬件推理尚未进行，严禁使用任何模拟器或伪造日志冒充成功 |
-| **Adapter v2 CI 验证** | **Unfinished (待触发草案核查)** | 等待用户审批最小 CI 工作流改动，触发独立且可复现的 GitHub Actions 验证 |
+| **Adapter v2 候选向量 CI 验证** | **CI-verified (狭窄草案证据)** | Commit `5c10d371` 已在 GitHub Actions Run 40360311553 成功验证候选向量生成与草案套件；M2 冻结继续保持 OPEN |
+| **M2 规范冻结结论** | **Unfinished (OPEN)** | 固定基准校验、严格目标阶段断言、边界正例可达性、进程内会话契约等待最终核定，绝不根据草案绿灯宣布 M2 冻结或进入 M3–M5 |

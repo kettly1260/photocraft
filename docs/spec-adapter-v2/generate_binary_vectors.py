@@ -6,7 +6,7 @@ Binary Wire Protocol Layout (PCADREQ2 / PCADRES2):
   Offset                Length        Type      Description
   0                     8             bytes     ASCII Magic: b"PCADREQ2" or b"PCADRES2"
   8                     4             u32le     header_length (bytes of UTF-8 JSON)
-  12                    L             bytes     UTF-8 JSON header (compact RFC 8259 key-sorted format)
+  12                    L             bytes     UTF-8 JSON header (compact RFC 8259 format, separators=(',', ':'), preserving key definition order)
   12 + L                4             u32le     section_count (0 <= N <= 64)
   16 + L                N * 16        bytes     Section Table:
                                                   kind: u32le (1=icc, 2=f32)

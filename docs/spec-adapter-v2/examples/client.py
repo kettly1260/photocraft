@@ -101,5 +101,39 @@ class AdapterV2Client:
             return res_json, res_sections, res_payload
 
 
+class InProcessAdapterClient:
+    """
+    Direct in-process client communicating with a WorkerSession without subprocess overhead.
+    """
+
+    def __init__(self, session: Any):
+        self.session = session
+
+    def invoke(
+        self, request_frame: bytes, verify_pair: bool = True
+    ) -> tuple[dict[str, Any], list[dict[str, Any]], bytes]:
+        """Invoke in-process worker session and optionally verify pair contract."""
+        _, req_json, _, _ = strict_decode_frame(request_frame, expected_magic=MAGIC_REQ)
+        resp_bytes = self.session.handle_request_frame(request_frame)
+        _, res_json, res_sections, res_payload = strict_decode_frame(
+            resp_bytes, expected_magic=MAGIC_RES
+        )
+
+        if verify_pair:
+            pair_check(req_json, res_json)
+
+        return res_json, res_sections, res_payload
+
+    def close(self) -> None:
+        """Explicitly close underlying worker session."""
+        if hasattr(self.session, "close"):
+            self.session.close()
+
+    @property
+    def is_closed(self) -> bool:
+        """Check if underlying worker session is closed."""
+        return bool(getattr(self.session, "is_closed", False))
+
+
 if __name__ == "__main__":
     print("PhotoCraft Adapter v2 Reference Client module loaded.")
