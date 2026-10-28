@@ -104,14 +104,11 @@ internal static partial class Program
 
         var backend = new FakeBackend();
         using var input = new FileStream(requestPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-        var magic = new byte[8];
-        if (input.Length >= 8)
-        {
-            input.ReadExactly(magic);
-            input.Position = 0;
-        }
+        Span<byte> magic = stackalloc byte[8];
+        int bytesRead = input.Read(magic);
+        input.Position = 0;
 
-        if (magic.SequenceEqual("PCADREQ2"u8))
+        if (bytesRead == 8 && magic.SequenceEqual("PCADREQ2"u8))
         {
             var session = new WorkerSessionV2(root, nativeWindowsArm64: true, backend);
             var replies = new List<ReplyV2>();
@@ -125,7 +122,7 @@ internal static partial class Program
             Protocol.PublishV2Multi(responsePath, replies);
             return 0;
         }
-        else if (magic.SequenceEqual("PCADREQ1"u8))
+        else if (bytesRead == 8 && magic.SequenceEqual("PCADREQ1"u8))
         {
             using var document = Protocol.ReadHeader(input);
             InputImage? image = null;

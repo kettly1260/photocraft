@@ -227,9 +227,9 @@ impl VerifiedWorker {
         let inner = if record.manifest.package_version >= 2 {
             let mut v2 = WorkerAdapterV2::new(executable, record.manifest.descriptor.clone(), timeout).map_err(adapter_error)?;
             v2.set_resource_identity(photocraft_plugins::worker_v2::V2ResourceIdentity {
-                id: record.manifest.id.clone(),
-                version: record.manifest.version.clone(),
-                manifest_digest: record.manifest_digest.clone(),
+                id: record.manifest.descriptor.id.clone(),
+                version: record.manifest.descriptor.version.clone(),
+                manifest_digest: record.hashes.get("worker.exe").cloned().unwrap_or_else(|| record.manifest.descriptor.id.clone()),
             });
             InnerWorker::V2(v2)
         } else {
@@ -498,7 +498,7 @@ fn check_status(s: &mut Session, p: &Value, prepare: bool) -> Result<Value> {
                     }
                 }
                 InnerWorker::V2(w) => {
-                    let resource_id = &record.manifest.id;
+                    let resource_id = &record.manifest.descriptor.id;
                     let result = if prepare {
                         w.prepare(resource_id, None, &context)
                     } else {
@@ -636,7 +636,7 @@ mod tests {
         let mut s = Session::new();
         s.attach_adapter_directory(data.path().join("Adapters")).unwrap();
         let result = s.execute("plugin.adapter.install", json!({"path": path, "trust": true})).unwrap();
-        assert_eq!(result["packages"][0]["enabled"], false);
+        assert_eq!(result["packages"][0]["enabled"], serde_json::Value::Bool(false));
         assert_eq!(result["packages"][0]["manifest"]["package_version"], 2);
 
         let id = m2.descriptor.id.clone();

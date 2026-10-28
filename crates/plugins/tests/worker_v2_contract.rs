@@ -202,8 +202,8 @@ fn v2_bounded_read_overflow_assertions() {
     bad_payload.extend_from_slice(&(1u32).to_le_bytes());
     bad_payload.extend_from_slice(b"{}");
     // Section entry: kind=2, reserved=0, offset=0, length=MAX_PAYLOAD_BYTES + 4
-    bad_payload.extend_from_slice(&(2u16).to_le_bytes());
-    bad_payload.extend_from_slice(&(0u16).to_le_bytes());
+    bad_payload.extend_from_slice(&(2u32).to_le_bytes());
+    bad_payload.extend_from_slice(&(0u32).to_le_bytes());
     bad_payload.extend_from_slice(&(0u32).to_le_bytes());
     bad_payload.extend_from_slice(&((MAX_PAYLOAD_BYTES + 4) as u32).to_le_bytes());
     let err = read_v2_frame_bounded(&mut Cursor::new(bad_payload), RESPONSE_MAGIC).unwrap_err();
@@ -361,6 +361,6 @@ fn rust_csharp_v2_process_interop_regression() {
     assert_eq!(resp.output.image.channels, 1);
     assert_eq!(resp.output.image.color_mode, "gray");
     assert_eq!(resp.output.image.data.len(), 1);
-    assert!(resp.output.image.data[0] >= 0.0 && resp.output.image.data[0] <= 1.0);
+    assert!((0.0..=1.0).contains(&resp.output.image.data[0]));
     assert_eq!(resp.execution.devices, vec!["qnn.htp".to_string()]);
 }

@@ -580,9 +580,10 @@ impl WorkerAdapterV2 {
         let mut all_requests = Vec::new();
         all_requests.extend_from_slice(&hello_frame);
         if action != "hello" {
-            if let Some(frame) = action_frame {
-                all_requests.extend_from_slice(frame);
-            }
+            let Some(frame) = action_frame else {
+                return Err(Error::Failed("missing action frame".into()));
+            };
+            all_requests.extend_from_slice(frame);
         }
 
         let mut file = OpenOptions::new()
