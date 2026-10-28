@@ -127,19 +127,22 @@
 - **Run 40543303243（commit `7caac28b`）草案工作流定位**：
   - 触发工作流：`.github/workflows/adapter-spec.yml`；
   - 结果：Step 5 报 `AssertionError: wire-hello-req.bin: File size mismatch (got 273, expected 243)`；
-  - 根因：`FIXED_ORACLE_VECTORS` 遗留了旧版缺少 `"sections": []` 时的 243B / 227 头部记录；已通过提取工件 `12668240638` 真实原件完成 8 向量基准表重校，并同步修正重复键报错串、输入掩码端口声明位置及 1MiB 边界数学计算。
+  - 纠正归因说明：此前曾有“旧 fixture 缺少 sections 导致 243B”的推测，经查证该推测不成立。实际事实为：测试代码中所列 `FIXED_ORACLE_VECTORS` 系手工录入的未核验历史数字，而真实归档工件 `12668240638` 中 `wire-hello-req.bin` 的实际大小自始至终即为 273 字节（头部 257 字节）。现已直接按权威工件原件核对固化。
+- **Run 40623847818（commit `87527b7e`）草案工作流定位**：
+  - 触发工作流：`.github/workflows/adapter-spec.yml`；
+  - 结果：7 个步骤全部通过（100% 通过率），产生归档工件 `adapter-v2-candidate-vectors`（ID `12788586570`，8,126 字节）。
 
 ---
 
-## 五、执行状态与阶段结论
+## 五、分维度执行状态与阶段报告
 
-依据用户制定的严格状态标准（Written / Delivered / CI-verified / Unfinished），当前状态判定如下：
+依据用户制定的严格状态标准（Written / Delivered / CI-verified / Unfinished），对各关键维度分别报告如下：
 
-| 项目 / 维度 | 当前判定状态 | 具体事实说明 |
+| 项目 / 维度 | 当前判定状态 | 具体事实说明与证据链 |
 |---|---|---|
-| **模型候选调研与技术报告** | **Delivered (已交付)** | 完整梳理 RMBG-1.4、BiRefNet、MODNet 事实/推论/未知项，严正标注训练集非商用许可污染与人像/通用边界，模型争议结论严格保持未核验且不作许可批准 |
-| **张量规范与预处理契约** | **Delivered (已交付)** | 严格明确 `[1,3,H,W]` NCHW、RGB 通道、浮点归一化及输出掩膜区间 |
-| **QNN Context Binary 编译** | **Unfinished (未开始)** | 无真实 QDQ ONNX、未进行 Qualcomm SDK 远程交叉编译 |
-| **Snapdragon 物理 NPU 推理** | **Unfinished (未完成)** | 真实硬件推理尚未进行，严禁使用任何模拟器或伪造日志冒充成功 |
-| **Adapter v2 固定基准与规约修复** | **Delivered (待CI验证)** | 8 向量 Fixed Oracle 与工件 12668240638 严格核对对齐，目标阶段断言、输入端口策略、1MiB 边界及会话状态机已完全就绪；M2 冻结继续保持 OPEN |
-| **M2 规范冻结结论** | **Unfinished (OPEN)** | 阶段断言完整性与环境验证等待最终核定，绝不根据草案绿灯宣布 M2 冻结或进入 M3–M5 |
+| **Python 规约一致性 (M2)** | **CI-verified (已验证)** | CI Run `40623847818` 验证通过：包含 8 项 Fixed Oracle 对齐、19 项严格负例阶段断言、1MiB 边界数学可达性、JSON 深度限制及单进程内重复握手状态机校验。 |
+| **C# Worker 构建与协议实现** | **Delivered (已交付)** | .NET 8 工程 `PhotoCraft.OnnxQnn.sln` / `PhotoCraft.OnnxQnn.csproj` 实现 v2 协议编解码、流式会话生命周期、`WhenWritingNull` 杜绝多余 null、run 失败保留 run 信封，并支持 `package_version` 2 包格式清单。 |
+| **跨语言进程互通 (Rust ↔ C#)** | **Delivered (待CI验证)** | Rust `WorkerAdapterV2` 真实拉起 C# 测试进程，测试覆盖 hello 握手、定向控制 (probe/prepare)、`needs_model` 错误响应、1x1 图像 run 及 Rust 端 mask f32 解析与有界读取。**明确声明：测试桩采用 FakeBackend 验证协议与进程间契约，绝非 QNN/NPU 硬件证据。** |
+| **Snapdragon 物理 NPU 推理** | **Unfinished (未开始)** | 暂无真实 Snapdragon 物理硬件环境接入，未进行实际 NPU 硬件推理，亦未编译硬件 context binary。严禁以 CPU 回退或模拟器伪造 NPU 证据。 |
+| **模型候选调研与技术报告** | **Delivered (已交付)** | 完整梳理 RMBG-1.4、BiRefNet、MODNet 事实/推论/未知项，严正标注训练集非商用许可污染与人像/通用边界，模型争议结论严格保持未核验且不作许可批准。 |
+| **M2 规范冻结结论** | **Unfinished (OPEN)** | M2 规约其余独立欠项继续保持 OPEN，本批工作仅收敛跨语言协议对齐与垂直切片互通，不扩大为宣布 M2 冻结，不提前进入 M3–M5。 |

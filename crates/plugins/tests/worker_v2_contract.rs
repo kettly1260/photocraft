@@ -3,11 +3,15 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use std::collections::BTreeMap;
+use std::io::Cursor;
+use std::path::PathBuf;
+use std::time::Duration;
+use photocraft_plugins::adapter::{Adapter, Context, Descriptor, Error, Image, OutputKind, Request};
 use photocraft_plugins::worker_v2::{
-    decode_v2_frame, encode_v2_frame, validate_json_bounds,
+    decode_v2_frame, encode_v2_frame, read_v2_frame_bounded, validate_json_bounds,
     SectionEntry, V2ClientNegotiation, V2DevicePolicy, V2HelloRequest, V2HelloResponse,
     V2Port, V2ResourceIdentity, V2RunRequest, V2RunResponse, V2SectionMeta, V2ServerNegotiation,
-    V2StatusResponse, KIND_F32, MAX_HEADER_BYTES, MAX_JSON_DEPTH, MAX_PAYLOAD_BYTES, MAX_SECTIONS,
+    V2StatusResponse, WorkerAdapterV2, KIND_F32, MAX_HEADER_BYTES, MAX_JSON_DEPTH, MAX_PAYLOAD_BYTES, MAX_SECTIONS,
     REQUEST_MAGIC, RESPONSE_MAGIC,
 };
 
@@ -128,4 +132,235 @@ fn v2_hello_and_status_roundtrip() {
     let parsed_status: V2StatusResponse = serde_json::from_slice(&status_bytes).expect("deserialize status");
     assert_eq!(parsed_status.status, "ready");
     assert_eq!(parsed_status.readiness, Some("ready".into()));
+}
+
+#[test]
+fn v2_bounded_read_overflow_assertions() {
+    // 1. Header length exceeds MAX_HEADER_BYTES (1 MiB)
+    let mut bad_header = Vec::new();
+    bad_header.extend_from_slice(RESPONSE_MAGIC);
+    bad_header.extend_from_slice(&((MAX_HEADER_BYTES + 1) as u32).to_le_bytes());
+    bad_header.extend_from_slice(&(0u32).to_le_bytes());
+    let err = read_v2_frame_bounded(&mut Cursor::new(bad_header), RESPONSE_MAGIC).unwrap_err();
+    assert!(matches!(err, Error::Limit(_)), "Expected Limit error for oversized header, got {:?}", err);
+
+    // 2. Section count exceeds MAX_SECTIONS (64)
+    let mut bad_sections = Vec::new();
+    bad_sections.extend_from_slice(RESPONSE_MAGIC);
+    bad_sections.extend_from_slice(&(2u32).to_le_bytes()); // header_len = 2 ("{}")
+    bad_sections.extend_from_slice(&((MAX_SECTIONS + 1) as u32).to_le_bytes());
+    bad_sections.extend_from_slice(b"{}");
+    let err = read_v2_frame_bounded(&mut Cursor::new(bad_sections), RESPONSE_MAGIC).unwrap_err();
+    assert!(matches!(err, Error::Limit(_)), "Expected Limit error for section count > 64, got {:?}", err);
+
+    // 3. Section table unaligned offset (not multiple of 4)
+    let mut unaligned_sec = Vec::new();
+    unaligned_sec.extend_from_slice(RESPONSE_MAGIC);
+    unaligned_sec.extend_from_slice(&(2u32).to_le_bytes());
+    unaligned_sec.extend_from_slice(&(1u32).to_le_bytes());
+    unaligned_sec.extend_from_slice(b"{}");
+    // Section entry: kind=2 (u16), reserved=0 (u16), offset=3 (u32, unaligned!), length=4 (u32)
+    unaligned_sec.extend_from_slice(&(2u16).to_le_bytes());
+    unaligned_sec.extend_from_slice(&(0u16).to_le_bytes());
+    unaligned_sec.extend_from_slice(&(3u32).to_le_bytes());
+    unaligned_sec.extend_from_slice(&(4u32).to_le_bytes());
+    let err = read_v2_frame_bounded(&mut Cursor::new(unaligned_sec), RESPONSE_MAGIC).unwrap_err();
+    assert!(matches!(err, Error::Failed(_)), "Expected Failed error for unaligned section offset, got {:?}", err);
+
+    // 4. Section table unaligned length (not multiple of 4)
+    let mut unaligned_len = Vec::new();
+    unaligned_len.extend_from_slice(RESPONSE_MAGIC);
+    unaligned_len.extend_from_slice(&(2u32).to_le_bytes());
+    unaligned_len.extend_from_slice(&(1u32).to_le_bytes());
+    unaligned_len.extend_from_slice(b"{}");
+    // Section entry: kind=2, reserved=0, offset=0, length=5 (unaligned!)
+    unaligned_len.extend_from_slice(&(2u16).to_le_bytes());
+    unaligned_len.extend_from_slice(&(0u16).to_le_bytes());
+    unaligned_len.extend_from_slice(&(0u32).to_le_bytes());
+    unaligned_len.extend_from_slice(&(5u32).to_le_bytes());
+    let err = read_v2_frame_bounded(&mut Cursor::new(unaligned_len), RESPONSE_MAGIC).unwrap_err();
+    assert!(matches!(err, Error::Failed(_)), "Expected Failed error for unaligned section length, got {:?}", err);
+
+    // 5. Section table non-zero reserved field
+    let mut non_zero_res = Vec::new();
+    non_zero_res.extend_from_slice(RESPONSE_MAGIC);
+    non_zero_res.extend_from_slice(&(2u32).to_le_bytes());
+    non_zero_res.extend_from_slice(&(1u32).to_le_bytes());
+    non_zero_res.extend_from_slice(b"{}");
+    // Section entry: kind=2, reserved=1 (invalid non-zero!), offset=0, length=4
+    non_zero_res.extend_from_slice(&(2u16).to_le_bytes());
+    non_zero_res.extend_from_slice(&(1u16).to_le_bytes());
+    non_zero_res.extend_from_slice(&(0u32).to_le_bytes());
+    non_zero_res.extend_from_slice(&(4u32).to_le_bytes());
+    let err = read_v2_frame_bounded(&mut Cursor::new(non_zero_res), RESPONSE_MAGIC).unwrap_err();
+    assert!(matches!(err, Error::Failed(_)), "Expected Failed error for non-zero reserved field, got {:?}", err);
+
+    // 6. Payload exceeds MAX_PAYLOAD_BYTES (256 MiB)
+    let mut bad_payload = Vec::new();
+    bad_payload.extend_from_slice(RESPONSE_MAGIC);
+    bad_payload.extend_from_slice(&(2u32).to_le_bytes());
+    bad_payload.extend_from_slice(&(1u32).to_le_bytes());
+    bad_payload.extend_from_slice(b"{}");
+    // Section entry: kind=2, reserved=0, offset=0, length=MAX_PAYLOAD_BYTES + 4
+    bad_payload.extend_from_slice(&(2u16).to_le_bytes());
+    bad_payload.extend_from_slice(&(0u16).to_le_bytes());
+    bad_payload.extend_from_slice(&(0u32).to_le_bytes());
+    bad_payload.extend_from_slice(&((MAX_PAYLOAD_BYTES + 4) as u32).to_le_bytes());
+    let err = read_v2_frame_bounded(&mut Cursor::new(bad_payload), RESPONSE_MAGIC).unwrap_err();
+    assert!(matches!(err, Error::Limit(_)), "Expected Limit error for payload > 256 MiB, got {:?}", err);
+}
+
+struct TestNoopContext;
+impl Context for TestNoopContext {
+    fn cancelled(&self) -> bool {
+        false
+    }
+    fn progress(&self, _fraction: f32) {}
+}
+
+#[test]
+fn rust_csharp_v2_process_interop_regression() {
+    let dotnet_available = std::process::Command::new("dotnet")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !dotnet_available {
+        eprintln!("SKIPPED: dotnet SDK not found on PATH; skipping cross-process interop regression");
+        return;
+    }
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("resolve repo root");
+    let csharp_proj = repo_root.join("examples/onnx_qnn_worker/Tests/PhotoCraft.OnnxQnn.Tests.csproj");
+    if !csharp_proj.exists() {
+        eprintln!("SKIPPED: C# test project not found at {:?}", csharp_proj);
+        return;
+    }
+
+    let temp_build = tempfile::Builder::new()
+        .prefix("photocraft-qnn-interop-")
+        .tempdir()
+        .expect("create tempdir");
+    let build_out = temp_build.path().join("bin");
+
+    let build_status = std::process::Command::new("dotnet")
+        .arg("build")
+        .arg(&csharp_proj)
+        .arg("-c")
+        .arg("Release")
+        .arg("-o")
+        .arg(&build_out)
+        .status()
+        .expect("execute dotnet build");
+    assert!(build_status.success(), "dotnet build failed for PhotoCraft.OnnxQnn.Tests.csproj");
+
+    #[cfg(windows)]
+    let worker_exe = build_out.join("PhotoCraft.OnnxQnn.Tests.exe");
+    #[cfg(not(windows))]
+    let worker_exe = build_out.join("PhotoCraft.OnnxQnn.Tests");
+
+    if !worker_exe.exists() {
+        eprintln!("SKIPPED: Compiled executable not found at {:?}", worker_exe);
+        return;
+    }
+
+    let models_dir = temp_build.path().join("models");
+    std::fs::create_dir_all(&models_dir).expect("create models dir");
+
+    // 1. Setup synthetic model fixture
+    let setup_status = std::process::Command::new(&worker_exe)
+        .arg("--setup-synthetic")
+        .arg(&models_dir)
+        .status()
+        .expect("execute --setup-synthetic");
+    assert!(setup_status.success(), "--setup-synthetic failed");
+
+    let descriptor = Descriptor {
+        name: "test-qnn-adapter".into(),
+        version: "2.0.0".into(),
+        author: "PhotoCraft Contributors".into(),
+        description: "V2 Test Adapter".into(),
+        operations: vec!["select-subject".into()],
+        params_schema: serde_json::json!({
+            "type": "object",
+            "properties": {}
+        }),
+        requires_image: true,
+        devices: vec![],
+    };
+
+    let mut adapter = WorkerAdapterV2::new(worker_exe, descriptor, Duration::from_secs(30))
+        .expect("WorkerAdapterV2 creation");
+
+    let ctx = TestNoopContext;
+
+    // 2. Hello handshake
+    let hello = adapter.hello(&ctx).expect("adapter hello");
+    assert_eq!(hello.protocol, 2);
+    assert_eq!(hello.msg_type, "hello");
+    assert!(hello.negotiation.supported_features.contains(&"image-mask-v2".to_string()));
+
+    // 3. Needs model check: probe a missing model
+    let missing_status = adapter.probe("nonexistent-model", Some("qnn.htp"), &ctx)
+        .expect("probe missing model");
+    assert_eq!(missing_status.status, "needs_model");
+    assert_eq!(missing_status.error.as_ref().map(|e| e.code.as_str()), Some("ERR_MODEL_NOT_FOUND"));
+
+    // 4. Probe and prepare with installed synthetic model
+    let registry_content = std::fs::read_to_string(models_dir.join("qnn-models.json")).expect("read registry");
+    let registry: serde_json::Value = serde_json::from_str(&registry_content).expect("parse registry");
+    let profile = &registry["profiles"][0];
+    let model_sha256 = profile["model_sha256"].as_str().unwrap_or("").to_string();
+
+    adapter.set_resource_identity(V2ResourceIdentity {
+        id: "select-subject-v1".into(),
+        version: "1.0.0".into(),
+        manifest_digest: model_sha256,
+    });
+
+    let probe_status = adapter.probe("select-subject-v1", Some("qnn.htp"), &ctx)
+        .expect("probe ready model");
+    assert_eq!(probe_status.status, "ready");
+
+    let prepare_status = adapter.prepare("select-subject-v1", Some("qnn.htp"), &ctx)
+        .expect("prepare ready model");
+    assert_eq!(prepare_status.status, "ready");
+
+    // 5. Run 1x1 image inference
+    // Note: Test-only FakeBackend is used in PhotoCraft.OnnxQnn.Tests for cross-language contract verification.
+    // This does not constitute real Qualcomm NPU / QNN hardware evidence.
+    let req = Request {
+        operation: "select-subject".into(),
+        params: serde_json::json!({}),
+        image: Image {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+            channels: 3,
+            color_mode: "rgb".into(),
+            source_depth: 32,
+            alpha: false,
+            icc_profile: Vec::new(),
+            data: vec![0.5, 0.5, 0.5],
+        },
+        resource: Some("select-subject-v1".into()),
+        device: Some("qnn.htp".into()),
+        allow_fallback: false,
+    };
+
+    let resp = adapter.run(&req, &ctx).expect("adapter run 1x1 image");
+    assert_eq!(resp.output.kind, OutputKind::Mask);
+    assert_eq!(resp.output.image.width, 1);
+    assert_eq!(resp.output.image.height, 1);
+    assert_eq!(resp.output.image.channels, 1);
+    assert_eq!(resp.output.image.color_mode, "gray");
+    assert_eq!(resp.output.image.data.len(), 1);
+    assert!(resp.output.image.data[0] >= 0.0 && resp.output.image.data[0] <= 1.0);
+    assert_eq!(resp.execution.devices, vec!["qnn.htp".to_string()]);
 }

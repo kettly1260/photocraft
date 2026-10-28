@@ -142,7 +142,7 @@ fn launch_path(manifest: &Manifest, directory: &Path) -> Result<PathBuf> {
     }
 }
 fn validate_manifest(manifest: &Manifest) -> Result<()> {
-    if manifest.package_version != 1 || !(1_000..=300_000).contains(&manifest.timeout_ms) || !valid_leaf(&manifest.descriptor.id) {
+    if !matches!(manifest.package_version, 1 | 2) || !(1_000..=300_000).contains(&manifest.timeout_ms) || !valid_leaf(&manifest.descriptor.id) {
         return Err(io_error("unsupported package version, timeout (1–300 seconds), or adapter id"));
     }
     if manifest.files.len() > MAX_FILES {
@@ -225,7 +225,13 @@ impl VerifiedWorker {
         let executable = launch_path(&record.manifest, &directory)?;
         let timeout = Duration::from_millis(record.manifest.timeout_ms);
         let inner = if record.manifest.package_version >= 2 {
-            InnerWorker::V2(WorkerAdapterV2::new(executable, record.manifest.descriptor.clone(), timeout).map_err(adapter_error)?)
+            let mut v2 = WorkerAdapterV2::new(executable, record.manifest.descriptor.clone(), timeout).map_err(adapter_error)?;
+            v2.set_resource_identity(photocraft_plugins::worker_v2::V2ResourceIdentity {
+                id: record.manifest.id.clone(),
+                version: record.manifest.version.clone(),
+                manifest_digest: record.manifest_digest.clone(),
+            });
+            InnerWorker::V2(v2)
         } else {
             InnerWorker::V1(WorkerAdapter::new(executable, record.manifest.descriptor.clone(), timeout).map_err(adapter_error)?)
         };
@@ -492,10 +498,11 @@ fn check_status(s: &mut Session, p: &Value, prepare: bool) -> Result<Value> {
                     }
                 }
                 InnerWorker::V2(w) => {
+                    let resource_id = &record.manifest.id;
                     let result = if prepare {
-                        w.prepare("default-model", None, &context)
+                        w.prepare(resource_id, None, &context)
                     } else {
-                        w.probe("default-model", None, &context)
+                        w.probe(resource_id, None, &context)
                     };
                     match result {
                         Ok(status) => json!({
@@ -614,6 +621,35 @@ mod tests {
         next.execute("plugin.adapter.remove", json!({"provider":id})).unwrap();
         assert!(next.adapter_packages.packages.is_empty());
     }
+
+    #[test]
+    fn v2_package_install_enable_and_restart_recovery_selects_v2_worker() {
+        let source = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let mut m2 = manifest();
+        m2.package_version = 2;
+        m2.descriptor.id = "org.photocraft.test.v2package".into();
+        fs::write(source.path().join("worker.exe"), b"v2 worker binary placeholder").unwrap();
+        let path = source.path().join("adapter.json");
+        fs::write(&path, serde_json::to_vec(&m2).unwrap()).unwrap();
+
+        let mut s = Session::new();
+        s.attach_adapter_directory(data.path().join("Adapters")).unwrap();
+        let result = s.execute("plugin.adapter.install", json!({"path": path, "trust": true})).unwrap();
+        assert_eq!(result["packages"][0]["enabled"], false);
+        assert_eq!(result["packages"][0]["manifest"]["package_version"], 2);
+
+        let id = m2.descriptor.id.clone();
+        s.execute("plugin.adapter.enable", json!({"provider": id, "enabled": true})).unwrap();
+        assert!(s.adapters.get(&id).is_some());
+
+        // Restart recovery
+        let mut next = Session::new();
+        assert!(next.attach_adapter_directory(data.path().join("Adapters")).unwrap().is_empty());
+        assert!(next.adapters.get(&id).is_some());
+        assert_eq!(next.adapter_packages.packages.get(&id).unwrap().record.manifest.package_version, 2);
+    }
+
     #[test]
     fn replaced_worker_is_not_restored_or_enabled() {
         let source = tempfile::tempdir().unwrap();

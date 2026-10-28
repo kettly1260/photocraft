@@ -11,6 +11,18 @@ internal static partial class Program
     private static readonly List<TestResult> Results = [];
     private static int Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--setup-synthetic")
+        {
+            string targetDir = Path.GetFullPath(args[1]);
+            Directory.CreateDirectory(targetDir);
+            InstallSynthetic(targetDir);
+            Console.WriteLine($"Synthetic models installed to {targetDir}");
+            return 0;
+        }
+        if (args.Length >= 6 && args.Contains("--action") && args.Contains("--request") && args.Contains("--response"))
+        {
+            return RunWorker(args);
+        }
         if (args.Length != 2 || args[0] != "--results" || string.IsNullOrWhiteSpace(args[1]))
         { Console.Error.WriteLine("Required: --results <evidence.json>; no missing-evidence skip."); return 2; }
         Console.WriteLine("QNN pure tests: synthetic protocol/config/envelope/imaging and FAKE scheduling only; NO ORT/native/model/hardware inference.");
@@ -67,4 +79,66 @@ internal static partial class Program
     }
     private static void Registry(string root, WorkerConfig config) =>
         File.WriteAllBytes(Path.Combine(root, Profiles.ConfigName), JsonSerializer.SerializeToUtf8Bytes(config, Json.Options));
+
+    private static int RunWorker(string[] args)
+    {
+        string action = "";
+        string requestPath = "";
+        string responsePath = "";
+        string? root = null;
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (args[i] == "--action" && i + 1 < args.Length) action = args[i + 1];
+            else if (args[i] == "--request" && i + 1 < args.Length) requestPath = args[i + 1];
+            else if (args[i] == "--response" && i + 1 < args.Length) responsePath = args[i + 1];
+            else if (args[i] == "--root" && i + 1 < args.Length) root = args[i + 1];
+        }
+
+        if (string.IsNullOrEmpty(requestPath) || string.IsNullOrEmpty(responsePath))
+        {
+            Console.Error.WriteLine("Missing --request or --response path.");
+            return 2;
+        }
+
+        root ??= Path.GetDirectoryName(Path.GetFullPath(requestPath)) ?? AppContext.BaseDirectory;
+
+        var backend = new FakeBackend();
+        using var input = new FileStream(requestPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var magic = new byte[8];
+        if (input.Length >= 8)
+        {
+            input.ReadExactly(magic);
+            input.Position = 0;
+        }
+
+        if (magic.SequenceEqual("PCADREQ2"u8))
+        {
+            var session = new WorkerSessionV2(root, nativeWindowsArm64: true, backend);
+            var replies = new List<ReplyV2>();
+            while (input.Position < input.Length)
+            {
+                var v2Req = Protocol.ReadV2(input);
+                var reply = session.Handle(v2Req);
+                replies.Add(reply);
+                if (session.IsClosed) break;
+            }
+            Protocol.PublishV2Multi(responsePath, replies);
+            return 0;
+        }
+        else if (magic.SequenceEqual("PCADREQ1"u8))
+        {
+            using var document = Protocol.ReadHeader(input);
+            InputImage? image = null;
+            if (action == "run") image = Protocol.ReadImage(document.RootElement, input);
+            else Protocol.Control(document.RootElement, input);
+            var reply = Worker.Execute(action, image, root, nativeWindowsArm64: true, backend);
+            Protocol.Publish(responsePath, reply);
+            return 0;
+        }
+        else
+        {
+            Console.Error.WriteLine("Unrecognized request wire magic.");
+            return 3;
+        }
+    }
 }

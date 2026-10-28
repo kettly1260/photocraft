@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace PhotoCraft.OnnxQnn;
 
@@ -30,12 +31,12 @@ internal sealed record V2ServerNegotiation(int selected_wire_version, string[] e
 internal sealed record V2ResourceIdentity(string id, string? version, string? manifest_digest);
 internal sealed record V2DevicePolicy(string mode, string[] allowed_backends, bool allow_graph_fallback);
 internal sealed record V2Port(string kind, int? x, int? y, int width, int height, int channels,
-    string? color_mode, int? source_depth, bool? alpha, string? color_encoding, int data_section_index, int? icc_section_index);
+    string? color_mode, int? source_depth, bool? alpha, string? alpha_type, string? color_encoding, int data_section_index, int? icc_section_index);
 internal sealed record V2Device(string id, string kind);
 internal sealed record V2Timing(double cpu_preprocess_ms, double graph_execution_ms, double cpu_postprocess_ms, double total_ms);
 internal sealed record V2Execution(V2DevicePolicy? requested_policy, V2Device[] devices, string backend,
     string runtime_id, string runtime_version, V2ResourceIdentity? resource, string? configuration_digest,
-    bool graph_partitioned, bool graph_fallback, string? fallback_reason, string? evidence, V2Timing timing);
+    bool graph_partitioned, bool graph_fallback, [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] string? fallback_reason, string? evidence, V2Timing timing);
 internal sealed record V2ErrorDetail(string code, bool retryable);
 
 internal sealed record V2RequestHeader(
@@ -102,34 +103,46 @@ internal sealed record ReplyV2(V2ResponseHeader Header, List<SectionEntry> Secti
             status,
             message,
             action: action,
-            readiness: readiness ?? (status == "ready" ? "ready" : "not_ready"),
-            error: errorCode is not null ? new V2ErrorDetail(errorCode, false) : null,
+            readiness: status == "ready" ? (readiness ?? "files_verified") : null,
+            error: status != "ready" ? new V2ErrorDetail(errorCode ?? "resource_missing", false) : null,
             sections: []
         ),
         [],
         []
     );
 
-    internal static ReplyV2 RunOk(string requestId, float[] mask, int width, int height, int x, int y, double execMs)
+    internal static ReplyV2 RunOk(
+        string requestId,
+        float[] mask,
+        int width,
+        int height,
+        int x,
+        int y,
+        V2DevicePolicy? requestedPolicy,
+        V2ResourceIdentity? resource,
+        string? configDigest,
+        double preMs,
+        double execMs,
+        double postMs)
     {
         byte[] payload = new byte[mask.Length * 4];
         Buffer.BlockCopy(mask, 0, payload, 0, payload.Length);
-        var secEntry = new SectionEntry(0, 0, 0, (uint)payload.Length);
-        var port = new V2Port("mask", x, y, width, height, 1, "gray", 32, false, null, 0, null);
+        var secEntry = new SectionEntry(2, 0, 0, (uint)payload.Length);
+        var port = new V2Port("mask", x, y, width, height, 1, "gray", 32, false, null, null, 0, null);
         var outputs = new Dictionary<string, V2Port> { ["selection"] = port };
         var exec = new V2Execution(
-            null,
+            requestedPolicy,
             [new V2Device("qnn.htp", "npu")],
             "qnn",
             "qualcomm-qnn",
             "1.24.4",
-            null,
-            null,
+            resource,
+            configDigest,
             false,
             false,
             null,
-            "qnn-npu-direct",
-            new V2Timing(0.0, execMs, 0.0, execMs)
+            "worker_report",
+            new V2Timing(preMs, execMs, postMs, preMs + execMs + postMs)
         );
         return new ReplyV2(
             new V2ResponseHeader(
@@ -146,6 +159,20 @@ internal sealed record ReplyV2(V2ResponseHeader Header, List<SectionEntry> Secti
             payload
         );
     }
+
+    internal static ReplyV2 RunFailed(string requestId, string status, string message, string errorCode) => new(
+        new V2ResponseHeader(
+            2,
+            requestId,
+            "run",
+            status,
+            message,
+            error: new V2ErrorDetail(errorCode, false),
+            sections: []
+        ),
+        [],
+        []
+    );
 }
 
 internal static class Protocol
@@ -410,6 +437,25 @@ internal static class Protocol
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
+
+    internal static void PublishV2Multi(string path, IEnumerable<ReplyV2> replies)
+    {
+        string directory = Path.GetDirectoryName(path) ?? throw new WorkerException("Response must have a parent directory.");
+        string temporary = Path.Combine(directory, ".photocraft-qnn-v2-m-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            using (var file = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                foreach (var reply in replies)
+                {
+                    WriteV2(file, reply);
+                }
+                file.Flush(flushToDisk: true);
+            }
+            File.Move(temporary, path, overwrite: false);
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
 }
 
 internal sealed record Arguments(string Action, string Request, string Response)
@@ -428,9 +474,17 @@ internal sealed record Arguments(string Action, string Request, string Response)
     }
     private static string LocalPath(string path)
     {
-        if (!Path.IsPathFullyQualified(path) || path.Length < 4 || !char.IsAsciiLetter(path[0]) || path[1] != ':' ||
-            path[2] != '\\' || path.IndexOf(':', 2) >= 0)
-            throw new WorkerException("Only absolute local drive paths are accepted; no UNC/device paths or alternate data streams.");
+        if (OperatingSystem.IsWindows())
+        {
+            if (!Path.IsPathFullyQualified(path) || path.Length < 4 || !char.IsAsciiLetter(path[0]) || path[1] != ':' ||
+                (path[2] != '\\' && path[2] != '/') || path.IndexOf(':', 2) >= 0)
+                throw new WorkerException("Only absolute local drive paths are accepted; no UNC/device paths or alternate data streams.");
+        }
+        else
+        {
+            if (!Path.IsPathFullyQualified(path))
+                throw new WorkerException("Only absolute local paths are accepted.");
+        }
         return Path.GetFullPath(path);
     }
 }

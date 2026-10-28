@@ -30,10 +30,17 @@ internal static class Program
             if (magic.SequenceEqual("PCADREQ2"u8))
             {
                 isV2 = true;
-                var v2Req = Protocol.ReadV2(input);
-                v2RequestId = v2Req.RequestId;
-                var replyV2 = Worker.ExecuteV2(arguments.Action, v2Req, AppContext.BaseDirectory, supported, new QnnBackend());
-                Protocol.PublishV2(arguments.Response, replyV2);
+                var session = new WorkerSessionV2(AppContext.BaseDirectory, supported, new QnnBackend());
+                var replies = new List<ReplyV2>();
+                while (input.Position < input.Length)
+                {
+                    var v2Req = Protocol.ReadV2(input);
+                    v2RequestId = v2Req.RequestId;
+                    var reply = session.Handle(v2Req);
+                    replies.Add(reply);
+                    if (session.IsClosed) break;
+                }
+                Protocol.PublishV2Multi(arguments.Response, replies);
                 return 0;
             }
             else
@@ -62,8 +69,10 @@ internal static class Program
             if (isV2)
             {
                 string status = error is NeedsModelException ? "needs_model" : "error";
-                string? errorCode = error is NeedsModelException ? "ERR_MODEL_NOT_FOUND" : "ERR_INTERNAL";
-                var replyV2 = ReplyV2.Status(v2RequestId, arguments.Action, status, message, errorCode: errorCode);
+                string errorCode = error is NeedsModelException ? "resource_missing" : "internal_error";
+                var replyV2 = arguments.Action == "run"
+                    ? ReplyV2.RunFailed(v2RequestId, status, message, errorCode)
+                    : ReplyV2.Status(v2RequestId, arguments.Action, status, message, errorCode: errorCode);
                 try { Protocol.PublishV2(arguments.Response, replyV2); return 0; }
                 catch { Console.Error.WriteLine("Cannot publish bounded QNN worker v2 response."); return 3; }
             }

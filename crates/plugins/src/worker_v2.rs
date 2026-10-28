@@ -27,10 +27,10 @@ pub const MAX_PROPERTIES: usize = 512;
 pub const MAX_KEY_BYTES: usize = 128;
 pub const MAX_STRING_CHARS: usize = 4096;
 
-pub const KIND_F32: u32 = 0;
-pub const KIND_U8: u32 = 1;
-pub const KIND_ICC: u32 = 2;
-pub const KIND_RAW: u32 = 3;
+pub const KIND_ICC: u32 = 1;
+pub const KIND_F32: u32 = 2;
+pub const KIND_U8: u32 = 3;
+pub const KIND_RAW: u32 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SectionEntry {
@@ -70,6 +70,10 @@ pub struct V2ResourceIdentity {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct V2DevicePolicy {
     pub mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_device: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_kind: Option<String>,
     pub allowed_backends: Vec<String>,
     pub allow_graph_fallback: bool,
 }
@@ -303,11 +307,9 @@ fn check_value_bounds(value: &Value, depth: usize) -> Result<()> {
     Ok(())
 }
 
-pub fn decode_v2_frame(bytes: &[u8], expected_magic: &[u8; 8]) -> Result<DecodedFrame> {
-    if bytes.len() < 16 {
-        return Err(Error::Failed("Frame too short for minimum header size (16 bytes)".into()));
-    }
-    let magic: [u8; 8] = bytes[0..8].try_into().map_err(|_| Error::Failed("Invalid magic slice".into()))?;
+pub fn read_v2_frame_bounded<R: Read>(reader: &mut R, expected_magic: &[u8; 8]) -> Result<DecodedFrame> {
+    let mut magic = [0u8; 8];
+    reader.read_exact(&mut magic).map_err(|e| Error::Failed(format!("Failed to read frame magic: {e}")))?;
     if &magic != expected_magic {
         return Err(Error::Failed(format!(
             "Unrecognized wire magic: expected {:?}, got {:?}",
@@ -315,39 +317,34 @@ pub fn decode_v2_frame(bytes: &[u8], expected_magic: &[u8; 8]) -> Result<Decoded
             String::from_utf8_lossy(&magic)
         )));
     }
-    let header_len = u32::from_le_bytes(bytes[8..12].try_into().map_err(|_| Error::Failed("Slice error".into()))?) as usize;
+
+    let mut len_buf = [0u8; 4];
+    reader.read_exact(&mut len_buf).map_err(|e| Error::Failed(format!("Failed to read header length: {e}")))?;
+    let header_len = u32::from_le_bytes(len_buf) as usize;
     if header_len > MAX_HEADER_BYTES {
         return Err(Error::Limit(format!("Header length {header_len} exceeds 1 MiB limit")));
     }
-    if bytes.len() < 12 + header_len + 4 {
-        return Err(Error::Failed("Frame truncated before section count".into()));
-    }
-    let header_json = bytes[12..12 + header_len].to_vec();
+
+    let mut header_json = vec![0u8; header_len];
+    reader.read_exact(&mut header_json).map_err(|e| Error::Failed(format!("Failed to read header JSON: {e}")))?;
     validate_json_bounds(&header_json)?;
 
-    let sec_count_offset = 12 + header_len;
-    let section_count = u32::from_le_bytes(
-        bytes[sec_count_offset..sec_count_offset + 4]
-            .try_into()
-            .map_err(|_| Error::Failed("Slice error".into()))?,
-    ) as usize;
+    let mut sec_cnt_buf = [0u8; 4];
+    reader.read_exact(&mut sec_cnt_buf).map_err(|e| Error::Failed(format!("Failed to read section count: {e}")))?;
+    let section_count = u32::from_le_bytes(sec_cnt_buf) as usize;
     if section_count > MAX_SECTIONS {
         return Err(Error::Limit(format!("Section count {section_count} exceeds limit of {MAX_SECTIONS}")));
     }
 
-    let sec_table_offset = sec_count_offset + 4;
-    let sec_table_bytes = section_count * 16;
-    if bytes.len() < sec_table_offset + sec_table_bytes {
-        return Err(Error::Failed("Frame truncated in section table".into()));
-    }
-
     let mut sections = Vec::with_capacity(section_count);
+    let mut max_section_end = 0usize;
     for i in 0..section_count {
-        let entry_offset = sec_table_offset + i * 16;
-        let kind = u32::from_le_bytes(bytes[entry_offset..entry_offset + 4].try_into().map_err(|_| Error::Failed("Slice error".into()))?);
-        let reserved = u32::from_le_bytes(bytes[entry_offset + 4..entry_offset + 8].try_into().map_err(|_| Error::Failed("Slice error".into()))?);
-        let offset = u32::from_le_bytes(bytes[entry_offset + 8..entry_offset + 12].try_into().map_err(|_| Error::Failed("Slice error".into()))?);
-        let length = u32::from_le_bytes(bytes[entry_offset + 12..entry_offset + 16].try_into().map_err(|_| Error::Failed("Slice error".into()))?);
+        let mut entry_buf = [0u8; 16];
+        reader.read_exact(&mut entry_buf).map_err(|e| Error::Failed(format!("Failed to read section {i} entry: {e}")))?;
+        let kind = u32::from_le_bytes(entry_buf[0..4].try_into().unwrap());
+        let reserved = u32::from_le_bytes(entry_buf[4..8].try_into().unwrap());
+        let offset = u32::from_le_bytes(entry_buf[8..12].try_into().unwrap());
+        let length = u32::from_le_bytes(entry_buf[12..16].try_into().unwrap());
 
         if reserved != 0 {
             return Err(Error::Failed(format!("Section {i} reserved field is non-zero: {reserved}")));
@@ -358,13 +355,26 @@ pub fn decode_v2_frame(bytes: &[u8], expected_magic: &[u8; 8]) -> Result<Decoded
         if length % 4 != 0 {
             return Err(Error::Failed(format!("Section {i} length {length} is not 4-byte aligned")));
         }
+        let end = (offset as usize)
+            .checked_add(length as usize)
+            .ok_or_else(|| Error::Limit("Section offset + length overflow".into()))?;
+        if end > MAX_PAYLOAD_BYTES {
+            return Err(Error::Limit(format!("Section {i} end offset {end} exceeds max payload limit of {MAX_PAYLOAD_BYTES}")));
+        }
+        if end > max_section_end {
+            max_section_end = end;
+        }
         sections.push(SectionEntry { kind, reserved, offset, length });
     }
 
-    let payload_offset = sec_table_offset + sec_table_bytes;
-    let payload = bytes[payload_offset..].to_vec();
+    let mut take_reader = reader.take((MAX_PAYLOAD_BYTES as u64) + 1);
+    let mut payload = Vec::new();
+    take_reader.read_to_end(&mut payload).map_err(|e| Error::Failed(format!("Failed to read payload: {e}")))?;
     if payload.len() > MAX_PAYLOAD_BYTES {
-        return Err(Error::Limit(format!("Payload length {} exceeds limit of {MAX_PAYLOAD_BYTES}", payload.len())));
+        return Err(Error::Limit(format!("Payload length exceeds limit of {MAX_PAYLOAD_BYTES}")));
+    }
+    if payload.len() < max_section_end {
+        return Err(Error::Failed(format!("Payload length {} is less than required section extent {}", payload.len(), max_section_end)));
     }
 
     for (i, sec) in sections.iter().enumerate() {
@@ -380,6 +390,10 @@ pub fn decode_v2_frame(bytes: &[u8], expected_magic: &[u8; 8]) -> Result<Decoded
     }
 
     Ok(DecodedFrame { magic, header_json, sections, payload })
+}
+
+pub fn decode_v2_frame(mut bytes: &[u8], expected_magic: &[u8; 8]) -> Result<DecodedFrame> {
+    read_v2_frame_bounded(&mut bytes, expected_magic)
 }
 
 pub fn encode_v2_frame(magic: &[u8; 8], header_json: &[u8], sections: &[SectionEntry], payload: &[u8]) -> Result<Vec<u8>> {
@@ -437,6 +451,7 @@ pub struct WorkerAdapterV2 {
     executable: PathBuf,
     descriptor: Descriptor,
     timeout: Duration,
+    resource_identity: Option<V2ResourceIdentity>,
 }
 
 impl WorkerAdapterV2 {
@@ -454,30 +469,22 @@ impl WorkerAdapterV2 {
         if !executable.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("exe")) {
             return Err(Error::Failed("worker executable must be an explicit .exe, not a shell script".into()));
         }
-        Ok(Self { executable, descriptor, timeout })
+        Ok(Self {
+            executable,
+            descriptor,
+            timeout,
+            resource_identity: None,
+        })
+    }
+
+    pub fn set_resource_identity(&mut self, identity: V2ResourceIdentity) {
+        self.resource_identity = Some(identity);
     }
 
     pub fn hello(&self, ctx: &dyn Context) -> Result<V2HelloResponse> {
-        let req = V2HelloRequest {
-            protocol: 2,
-            request_id: "host-hello-req".into(),
-            msg_type: "hello".into(),
-            sections: Vec::new(),
-            negotiation: V2ClientNegotiation {
-                wire_versions: vec![2],
-                supported_features: vec!["image-mask-v2".into(), "same-geometry".into(), "resource-control".into()],
-                required_features: vec!["image-mask-v2".into(), "same-geometry".into(), "resource-control".into()],
-            },
-        };
-        let header_json = serde_json::to_vec(&req).map_err(|e| Error::Failed(e.to_string()))?;
-        let frame = encode_v2_frame(REQUEST_MAGIC, &header_json, &[], &[])?;
-        let resp_frame = self.invoke_raw("hello", &frame, ctx)?;
-        let decoded = decode_v2_frame(&resp_frame, RESPONSE_MAGIC)?;
-        let hello_resp: V2HelloResponse = serde_json::from_slice(&decoded.header_json)
+        let frame = self.invoke_session("hello", None, ctx)?;
+        let hello_resp: V2HelloResponse = serde_json::from_slice(&frame.header_json)
             .map_err(|e| Error::InvalidResponse(format!("Invalid hello response JSON: {e}")))?;
-        if hello_resp.protocol != 2 || hello_resp.msg_type != "hello" {
-            return Err(Error::InvalidResponse("Worker returned incompatible hello response".into()));
-        }
         Ok(hello_resp)
     }
 
@@ -490,6 +497,33 @@ impl WorkerAdapterV2 {
     }
 
     fn control_v2(&self, action: &'static str, resource_id: &str, device: Option<&str>, ctx: &dyn Context) -> Result<V2StatusResponse> {
+        let resource = if let Some(id) = &self.resource_identity {
+            id.clone()
+        } else {
+            V2ResourceIdentity {
+                id: resource_id.into(),
+                version: "1.0.0".into(),
+                manifest_digest: String::new(),
+            }
+        };
+        let device_policy = if let Some(d) = device {
+            V2DevicePolicy {
+                mode: "exact".into(),
+                allowed_backends: vec![d.into()],
+                allow_graph_fallback: false,
+                target_device: Some(d.into()),
+                target_kind: None,
+            }
+        } else {
+            V2DevicePolicy {
+                mode: "auto".into(),
+                allowed_backends: vec!["qnn".into(), "example.synthetic".into()],
+                allow_graph_fallback: false,
+                target_device: None,
+                target_kind: None,
+            }
+        };
+
         let req = V2ControlRequest {
             protocol: 2,
             request_id: format!("host-{action}-req"),
@@ -497,28 +531,19 @@ impl WorkerAdapterV2 {
             action: action.into(),
             operation: "select-subject".into(),
             operation_version: "2.0.0".into(),
-            resource: V2ResourceIdentity {
-                id: resource_id.into(),
-                version: "1.0.0".into(),
-                manifest_digest: "0".repeat(64),
-            },
-            device_policy: V2DevicePolicy {
-                mode: "auto".into(),
-                allowed_backends: vec!["qnn".into(), "example.synthetic".into()],
-                allow_graph_fallback: false,
-            },
+            resource,
+            device_policy,
             sections: Vec::new(),
         };
         let header_json = serde_json::to_vec(&req).map_err(|e| Error::Failed(e.to_string()))?;
         let frame = encode_v2_frame(REQUEST_MAGIC, &header_json, &[], &[])?;
-        let resp_frame = self.invoke_raw(action, &frame, ctx)?;
-        let decoded = decode_v2_frame(&resp_frame, RESPONSE_MAGIC)?;
-        let status_resp: V2StatusResponse = serde_json::from_slice(&decoded.header_json)
+        let resp_frame = self.invoke_session(action, Some(&frame), ctx)?;
+        let status_resp: V2StatusResponse = serde_json::from_slice(&resp_frame.header_json)
             .map_err(|e| Error::InvalidResponse(format!("Invalid status response JSON: {e}")))?;
         Ok(status_resp)
     }
 
-    fn invoke_raw(&self, action: &'static str, request_bytes: &[u8], ctx: &dyn Context) -> Result<Vec<u8>> {
+    fn invoke_session(&self, action: &'static str, action_frame: Option<&[u8]>, ctx: &dyn Context) -> Result<DecodedFrame> {
         let deadline = Instant::now()
             .checked_add(self.timeout)
             .ok_or_else(|| Error::Limit("worker deadline overflow".into()))?;
@@ -536,12 +561,36 @@ impl WorkerAdapterV2 {
         let request_path = working_dir.join("request.bin");
         let response_path = working_dir.join("response.bin");
 
+        // Construct session request payload:
+        // Frame 1: Hello request (mandatory for every fresh process lifecycle)
+        let hello_req = V2HelloRequest {
+            protocol: 2,
+            request_id: "host-hello-req".into(),
+            msg_type: "hello".into(),
+            sections: Vec::new(),
+            negotiation: V2ClientNegotiation {
+                wire_versions: vec![2],
+                supported_features: vec!["image-mask-v2".into(), "same-geometry".into(), "resource-control".into()],
+                required_features: vec!["image-mask-v2".into(), "same-geometry".into(), "resource-control".into()],
+            },
+        };
+        let hello_json = serde_json::to_vec(&hello_req).map_err(|e| Error::Failed(e.to_string()))?;
+        let hello_frame = encode_v2_frame(REQUEST_MAGIC, &hello_json, &[], &[])?;
+
+        let mut all_requests = Vec::new();
+        all_requests.extend_from_slice(&hello_frame);
+        if action != "hello" {
+            if let Some(frame) = action_frame {
+                all_requests.extend_from_slice(frame);
+            }
+        }
+
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&request_path)
             .map_err(|e| Error::Failed(format!("create worker request: {e}")))?;
-        file.write_all(request_bytes)
+        file.write_all(&all_requests)
             .map_err(|e| Error::Failed(format!("write worker request: {e}")))?;
         file.flush()
             .map_err(|e| Error::Failed(format!("flush worker request: {e}")))?;
@@ -557,7 +606,7 @@ impl WorkerAdapterV2 {
             .arg(&response_path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::inherit())
             .spawn()
             .map_err(|e| Error::Failed(format!("start worker: {e}")))?;
 
@@ -586,12 +635,22 @@ impl WorkerAdapterV2 {
 
         let mut resp_file = File::open(&response_path)
             .map_err(|e| Error::Failed(format!("open worker response: {e}")))?;
-        let mut resp_bytes = Vec::new();
-        resp_file
-            .read_to_end(&mut resp_bytes)
-            .map_err(|e| Error::Failed(format!("read worker response: {e}")))?;
 
-        Ok(resp_bytes)
+        // Bounded streaming read for Frame 1 (Hello response)
+        let hello_resp_frame = read_v2_frame_bounded(&mut resp_file, RESPONSE_MAGIC)?;
+        let hello_resp: V2HelloResponse = serde_json::from_slice(&hello_resp_frame.header_json)
+            .map_err(|e| Error::InvalidResponse(format!("Invalid hello response JSON: {e}")))?;
+        if hello_resp.protocol != 2 || hello_resp.msg_type != "hello" {
+            return Err(Error::InvalidResponse("Worker returned incompatible hello response".into()));
+        }
+
+        if action == "hello" {
+            return Ok(hello_resp_frame);
+        }
+
+        // Bounded streaming read for Frame 2 (Action response)
+        let action_resp_frame = read_v2_frame_bounded(&mut resp_file, RESPONSE_MAGIC)?;
+        Ok(action_resp_frame)
     }
 }
 
@@ -639,22 +698,42 @@ impl Adapter for WorkerAdapterV2 {
             },
         );
 
+        let resource = if let Some(id) = &self.resource_identity {
+            id.clone()
+        } else {
+            V2ResourceIdentity {
+                id: request.resource.clone().unwrap_or_else(|| self.descriptor.name.clone()),
+                version: "1.0.0".into(),
+                manifest_digest: String::new(),
+            }
+        };
+
+        let device_policy = if let Some(d) = &request.device {
+            V2DevicePolicy {
+                mode: "exact".into(),
+                allowed_backends: vec![d.clone()],
+                allow_graph_fallback: request.allow_fallback,
+                target_device: Some(d.clone()),
+                target_kind: None,
+            }
+        } else {
+            V2DevicePolicy {
+                mode: "auto".into(),
+                allowed_backends: vec!["qnn".into(), "example.synthetic".into()],
+                allow_graph_fallback: request.allow_fallback,
+                target_device: None,
+                target_kind: None,
+            }
+        };
+
         let run_req = V2RunRequest {
             protocol: 2,
             request_id: "host-run-req".into(),
             msg_type: "run".into(),
             operation: "select-subject".into(),
             operation_version: "2.0.0".into(),
-            resource: V2ResourceIdentity {
-                id: request.resource.clone().unwrap_or_else(|| "default-model".into()),
-                version: "1.0.0".into(),
-                manifest_digest: "0".repeat(64),
-            },
-            device_policy: V2DevicePolicy {
-                mode: "auto".into(),
-                allowed_backends: vec!["qnn".into(), "example.synthetic".into()],
-                allow_graph_fallback: false,
-            },
+            resource,
+            device_policy,
             params: request.params.clone(),
             inputs,
             sections: vec![V2SectionMeta {
@@ -667,8 +746,7 @@ impl Adapter for WorkerAdapterV2 {
         let header_json = serde_json::to_vec(&run_req).map_err(|e| Error::Failed(e.to_string()))?;
         let frame = encode_v2_frame(REQUEST_MAGIC, &header_json, &[sec_entry], &payload)?;
 
-        let resp_frame = self.invoke_raw("run", &frame, ctx)?;
-        let decoded = decode_v2_frame(&resp_frame, RESPONSE_MAGIC)?;
+        let decoded = self.invoke_session("run", Some(&frame), ctx)?;
 
         let run_resp: V2RunResponse = serde_json::from_slice(&decoded.header_json)
             .map_err(|e| Error::InvalidResponse(format!("Invalid run response JSON: {e}")))?;
