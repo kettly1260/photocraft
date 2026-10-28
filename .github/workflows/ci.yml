@@ -227,6 +227,11 @@ jobs:
         with:
           tool: cargo-nextest@0.9.150
 
+      - name: Setup .NET SDK for cross-process interop tests
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
       # The unit leg runs `--lib --bins` and the integration leg `--test '*'` (every
       # integration-test target); the feature selection stays the same, so both legs share the
       # dependency cache.

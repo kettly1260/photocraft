@@ -100,7 +100,18 @@ internal static partial class Program
             return 2;
         }
 
-        root ??= Path.GetDirectoryName(Path.GetFullPath(requestPath)) ?? AppContext.BaseDirectory;
+        if (string.IsNullOrEmpty(root))
+        {
+            var reqDir = Path.GetDirectoryName(Path.GetFullPath(requestPath));
+            if (!string.IsNullOrEmpty(reqDir) && File.Exists(Path.Combine(reqDir, "qnn-models.json")))
+            {
+                root = reqDir;
+            }
+            else
+            {
+                root = AppContext.BaseDirectory;
+            }
+        }
 
         var backend = new FakeBackend();
         using var input = new FileStream(requestPath, FileMode.Open, FileAccess.Read, FileShare.Read);

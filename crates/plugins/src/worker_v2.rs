@@ -229,6 +229,7 @@ pub struct V2RunResponse {
 // Strict Bounded Frame Codec
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodedFrame {
     pub magic: [u8; 8],
     pub header_json: Vec<u8>,
@@ -367,27 +368,15 @@ pub fn read_v2_frame_bounded<R: Read>(reader: &mut R, expected_magic: &[u8; 8]) 
         sections.push(SectionEntry { kind, reserved, offset, length });
     }
 
-    let mut take_reader = reader.take((MAX_PAYLOAD_BYTES as u64) + 1);
-    let mut payload = Vec::new();
-    take_reader.read_to_end(&mut payload).map_err(|e| Error::Failed(format!("Failed to read payload: {e}")))?;
-    if payload.len() > MAX_PAYLOAD_BYTES {
-        return Err(Error::Limit(format!("Payload length exceeds limit of {MAX_PAYLOAD_BYTES}")));
-    }
-    if payload.len() < max_section_end {
-        return Err(Error::Failed(format!("Payload length {} is less than required section extent {}", payload.len(), max_section_end)));
-    }
-
-    for (i, sec) in sections.iter().enumerate() {
-        let end = sec.offset as usize + sec.length as usize;
-        if end > payload.len() {
-            return Err(Error::Limit(format!(
-                "Section {i} (offset={}, length={}) exceeds payload budget ({})",
-                sec.offset,
-                sec.length,
-                payload.len()
-            )));
-        }
-    }
+    let payload = if max_section_end > 0 {
+        let mut p = vec![0u8; max_section_end];
+        reader
+            .read_exact(&mut p)
+            .map_err(|e| Error::Failed(format!("Failed to read payload (expected {max_section_end} bytes): {e}")))?;
+        p
+    } else {
+        Vec::new()
+    };
 
     Ok(DecodedFrame { magic, header_json, sections, payload })
 }

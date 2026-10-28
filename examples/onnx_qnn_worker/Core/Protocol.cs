@@ -268,17 +268,20 @@ internal static class Protocol
             sections.Add(new SectionEntry(kind, reserved, offset, length));
         }
 
-        long payloadLength = input.Length - input.Position;
-        if (payloadLength > MaxPayloadBytes)
-            throw new WorkerException($"Payload length {payloadLength} exceeds limit of {MaxPayloadBytes}.");
-
-        var payload = new byte[(int)payloadLength];
-        input.ReadExactly(payload);
-
+        long maxSectionEnd = 0;
         foreach (var sec in sections)
         {
-            if ((long)sec.Offset + sec.Length > payload.Length)
-                throw new WorkerException("Section bounds exceed payload buffer.");
+            long end = (long)sec.Offset + sec.Length;
+            if (end > MaxPayloadBytes)
+                throw new WorkerException($"Section end {end} exceeds limit of {MaxPayloadBytes}.");
+            if (end > maxSectionEnd)
+                maxSectionEnd = end;
+        }
+
+        var payload = new byte[maxSectionEnd];
+        if (maxSectionEnd > 0)
+        {
+            input.ReadExactly(payload);
         }
 
         var header = root.Deserialize<V2RequestHeader>(Json.Options) ?? throw new WorkerException("Missing v2 request header.");

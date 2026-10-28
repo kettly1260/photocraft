@@ -134,6 +134,16 @@ fn v2_hello_and_status_roundtrip() {
     assert_eq!(parsed_status.readiness, Some("ready".into()));
 }
 
+fn make_test_frame(header_json: &[u8], section_count: u32, section_entries: &[u8]) -> Vec<u8> {
+    let mut frame = Vec::new();
+    frame.extend_from_slice(RESPONSE_MAGIC);
+    frame.extend_from_slice(&(header_json.len() as u32).to_le_bytes());
+    frame.extend_from_slice(header_json);
+    frame.extend_from_slice(&section_count.to_le_bytes());
+    frame.extend_from_slice(section_entries);
+    frame
+}
+
 #[test]
 fn v2_bounded_read_overflow_assertions() {
     // 1. Header length exceeds MAX_HEADER_BYTES (1 MiB)
@@ -145,67 +155,47 @@ fn v2_bounded_read_overflow_assertions() {
     assert!(matches!(err, Error::Limit(_)), "Expected Limit error for oversized header, got {:?}", err);
 
     // 2. Section count exceeds MAX_SECTIONS (64)
-    let mut bad_sections = Vec::new();
-    bad_sections.extend_from_slice(RESPONSE_MAGIC);
-    bad_sections.extend_from_slice(&(2u32).to_le_bytes()); // header_len = 2 ("{}")
-    bad_sections.extend_from_slice(&((MAX_SECTIONS + 1) as u32).to_le_bytes());
-    bad_sections.extend_from_slice(b"{}");
+    let bad_sections = make_test_frame(b"{}", (MAX_SECTIONS + 1) as u32, &[]);
     let err = read_v2_frame_bounded(&mut Cursor::new(bad_sections), RESPONSE_MAGIC).unwrap_err();
     assert!(matches!(err, Error::Limit(_)), "Expected Limit error for section count > 64, got {:?}", err);
 
     // 3. Section table unaligned offset (not multiple of 4)
-    let mut unaligned_sec = Vec::new();
-    unaligned_sec.extend_from_slice(RESPONSE_MAGIC);
-    unaligned_sec.extend_from_slice(&(2u32).to_le_bytes());
-    unaligned_sec.extend_from_slice(&(1u32).to_le_bytes());
-    unaligned_sec.extend_from_slice(b"{}");
-    // Section entry: kind=2 (u16), reserved=0 (u16), offset=3 (u32, unaligned!), length=4 (u32)
-    unaligned_sec.extend_from_slice(&(2u16).to_le_bytes());
-    unaligned_sec.extend_from_slice(&(0u16).to_le_bytes());
-    unaligned_sec.extend_from_slice(&(3u32).to_le_bytes());
-    unaligned_sec.extend_from_slice(&(4u32).to_le_bytes());
+    let mut unaligned_sec_entry = Vec::new();
+    unaligned_sec_entry.extend_from_slice(&(2u32).to_le_bytes());
+    unaligned_sec_entry.extend_from_slice(&(0u32).to_le_bytes());
+    unaligned_sec_entry.extend_from_slice(&(3u32).to_le_bytes()); // offset = 3 (unaligned!)
+    unaligned_sec_entry.extend_from_slice(&(4u32).to_le_bytes());
+    let unaligned_sec = make_test_frame(b"{}", 1, &unaligned_sec_entry);
     let err = read_v2_frame_bounded(&mut Cursor::new(unaligned_sec), RESPONSE_MAGIC).unwrap_err();
     assert!(matches!(err, Error::Failed(_)), "Expected Failed error for unaligned section offset, got {:?}", err);
 
     // 4. Section table unaligned length (not multiple of 4)
-    let mut unaligned_len = Vec::new();
-    unaligned_len.extend_from_slice(RESPONSE_MAGIC);
-    unaligned_len.extend_from_slice(&(2u32).to_le_bytes());
-    unaligned_len.extend_from_slice(&(1u32).to_le_bytes());
-    unaligned_len.extend_from_slice(b"{}");
-    // Section entry: kind=2, reserved=0, offset=0, length=5 (unaligned!)
-    unaligned_len.extend_from_slice(&(2u16).to_le_bytes());
-    unaligned_len.extend_from_slice(&(0u16).to_le_bytes());
-    unaligned_len.extend_from_slice(&(0u32).to_le_bytes());
-    unaligned_len.extend_from_slice(&(5u32).to_le_bytes());
+    let mut unaligned_len_entry = Vec::new();
+    unaligned_len_entry.extend_from_slice(&(2u32).to_le_bytes());
+    unaligned_len_entry.extend_from_slice(&(0u32).to_le_bytes());
+    unaligned_len_entry.extend_from_slice(&(0u32).to_le_bytes());
+    unaligned_len_entry.extend_from_slice(&(5u32).to_le_bytes()); // length = 5 (unaligned!)
+    let unaligned_len = make_test_frame(b"{}", 1, &unaligned_len_entry);
     let err = read_v2_frame_bounded(&mut Cursor::new(unaligned_len), RESPONSE_MAGIC).unwrap_err();
     assert!(matches!(err, Error::Failed(_)), "Expected Failed error for unaligned section length, got {:?}", err);
 
     // 5. Section table non-zero reserved field
-    let mut non_zero_res = Vec::new();
-    non_zero_res.extend_from_slice(RESPONSE_MAGIC);
-    non_zero_res.extend_from_slice(&(2u32).to_le_bytes());
-    non_zero_res.extend_from_slice(&(1u32).to_le_bytes());
-    non_zero_res.extend_from_slice(b"{}");
-    // Section entry: kind=2, reserved=1 (invalid non-zero!), offset=0, length=4
-    non_zero_res.extend_from_slice(&(2u16).to_le_bytes());
-    non_zero_res.extend_from_slice(&(1u16).to_le_bytes());
-    non_zero_res.extend_from_slice(&(0u32).to_le_bytes());
-    non_zero_res.extend_from_slice(&(4u32).to_le_bytes());
+    let mut non_zero_res_entry = Vec::new();
+    non_zero_res_entry.extend_from_slice(&(2u32).to_le_bytes());
+    non_zero_res_entry.extend_from_slice(&(1u32).to_le_bytes()); // reserved = 1 (invalid!)
+    non_zero_res_entry.extend_from_slice(&(0u32).to_le_bytes());
+    non_zero_res_entry.extend_from_slice(&(4u32).to_le_bytes());
+    let non_zero_res = make_test_frame(b"{}", 1, &non_zero_res_entry);
     let err = read_v2_frame_bounded(&mut Cursor::new(non_zero_res), RESPONSE_MAGIC).unwrap_err();
     assert!(matches!(err, Error::Failed(_)), "Expected Failed error for non-zero reserved field, got {:?}", err);
 
     // 6. Payload exceeds MAX_PAYLOAD_BYTES (256 MiB)
-    let mut bad_payload = Vec::new();
-    bad_payload.extend_from_slice(RESPONSE_MAGIC);
-    bad_payload.extend_from_slice(&(2u32).to_le_bytes());
-    bad_payload.extend_from_slice(&(1u32).to_le_bytes());
-    bad_payload.extend_from_slice(b"{}");
-    // Section entry: kind=2, reserved=0, offset=0, length=MAX_PAYLOAD_BYTES + 4
-    bad_payload.extend_from_slice(&(2u32).to_le_bytes());
-    bad_payload.extend_from_slice(&(0u32).to_le_bytes());
-    bad_payload.extend_from_slice(&(0u32).to_le_bytes());
-    bad_payload.extend_from_slice(&((MAX_PAYLOAD_BYTES + 4) as u32).to_le_bytes());
+    let mut bad_payload_entry = Vec::new();
+    bad_payload_entry.extend_from_slice(&(2u32).to_le_bytes());
+    bad_payload_entry.extend_from_slice(&(0u32).to_le_bytes());
+    bad_payload_entry.extend_from_slice(&(0u32).to_le_bytes());
+    bad_payload_entry.extend_from_slice(&((MAX_PAYLOAD_BYTES + 4) as u32).to_le_bytes());
+    let bad_payload = make_test_frame(b"{}", 1, &bad_payload_entry);
     let err = read_v2_frame_bounded(&mut Cursor::new(bad_payload), RESPONSE_MAGIC).unwrap_err();
     assert!(matches!(err, Error::Limit(_)), "Expected Limit error for payload > 256 MiB, got {:?}", err);
 }
@@ -220,62 +210,57 @@ impl Context for TestNoopContext {
 
 #[test]
 fn rust_csharp_v2_process_interop_regression() {
-    let dotnet_available = std::process::Command::new("dotnet")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-
-    if !dotnet_available {
-        eprintln!("SKIPPED: dotnet SDK not found on PATH; skipping cross-process interop regression");
-        return;
-    }
-
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo_root = manifest_dir
         .parent()
         .and_then(|p| p.parent())
         .expect("resolve repo root");
     let csharp_proj = repo_root.join("examples/onnx_qnn_worker/Tests/PhotoCraft.OnnxQnn.Tests.csproj");
-    if !csharp_proj.exists() {
-        eprintln!("SKIPPED: C# test project not found at {:?}", csharp_proj);
-        return;
-    }
+    assert!(csharp_proj.exists(), "Required C# test project not found at {:?}", csharp_proj);
 
-    let temp_build = tempfile::Builder::new()
-        .prefix("photocraft-qnn-interop-")
-        .tempdir()
-        .expect("create tempdir");
-    let build_out = temp_build.path().join("bin");
+    let worker_exe = if let Ok(val) = std::env::var("PHOTOCRAFT_QNN_TEST_BIN") {
+        let p = PathBuf::from(val);
+        assert!(p.exists(), "Specified PHOTOCRAFT_QNN_TEST_BIN executable does not exist: {:?}", p);
+        p
+    } else {
+        let dotnet_version = std::process::Command::new("dotnet")
+            .arg("--version")
+            .output()
+            .expect(".NET SDK 8.0+ is required on PATH for cross-process interop regression");
+        assert!(dotnet_version.status.success(), ".NET SDK 8.0+ must be available on PATH");
 
-    let build_status = std::process::Command::new("dotnet")
-        .arg("build")
-        .arg(&csharp_proj)
-        .arg("-c")
-        .arg("Release")
-        .arg("-o")
-        .arg(&build_out)
-        .status()
-        .expect("execute dotnet build");
-    assert!(build_status.success(), "dotnet build failed for PhotoCraft.OnnxQnn.Tests.csproj");
+        let temp_build = tempfile::Builder::new()
+            .prefix("photocraft-qnn-interop-")
+            .tempdir()
+            .expect("create tempdir");
+        let build_out = temp_build.into_path().join("bin");
 
-    #[cfg(windows)]
-    let worker_exe = build_out.join("PhotoCraft.OnnxQnn.Tests.exe");
-    #[cfg(not(windows))]
-    let worker_exe = build_out.join("PhotoCraft.OnnxQnn.Tests");
+        let build_status = std::process::Command::new("dotnet")
+            .arg("build")
+            .arg(&csharp_proj)
+            .arg("-c")
+            .arg("Release")
+            .arg("-o")
+            .arg(&build_out)
+            .status()
+            .expect("execute dotnet build");
+        assert!(build_status.success(), "dotnet build failed for PhotoCraft.OnnxQnn.Tests.csproj");
 
-    if !worker_exe.exists() {
-        eprintln!("SKIPPED: Compiled executable not found at {:?}", worker_exe);
-        return;
-    }
+        #[cfg(windows)]
+        let exe = build_out.join("PhotoCraft.OnnxQnn.Tests.exe");
+        #[cfg(not(windows))]
+        let exe = build_out.join("PhotoCraft.OnnxQnn.Tests");
 
-    let models_dir = temp_build.path().join("models");
-    std::fs::create_dir_all(&models_dir).expect("create models dir");
+        assert!(exe.exists(), "Compiled executable not found at {:?}", exe);
+        exe
+    };
 
-    // 1. Setup synthetic model fixture
+    let exe_dir = worker_exe.parent().expect("resolve worker exe directory");
+
+    // 1. Setup synthetic model fixture beside the executable
     let setup_status = std::process::Command::new(&worker_exe)
         .arg("--setup-synthetic")
-        .arg(&models_dir)
+        .arg(exe_dir)
         .status()
         .expect("execute --setup-synthetic");
     assert!(setup_status.success(), "--setup-synthetic failed");
@@ -299,35 +284,38 @@ fn rust_csharp_v2_process_interop_regression() {
 
     let ctx = TestNoopContext;
 
-    // 2. Hello handshake
+    // 2. Hello handshake (reads enabled_features)
     let hello = adapter.hello(&ctx).expect("adapter hello");
     assert_eq!(hello.protocol, 2);
     assert_eq!(hello.msg_type, "hello");
-    assert!(hello.negotiation.supported_features.contains(&"image-mask-v2".to_string()));
+    assert!(hello.negotiation.enabled_features.contains(&"image-mask-v2".to_string()));
 
     // 3. Needs model check: probe a missing model
     let missing_status = adapter.probe("nonexistent-model", Some("qnn.htp"), &ctx)
         .expect("probe missing model");
     assert_eq!(missing_status.status, "needs_model");
-    assert_eq!(missing_status.error.as_ref().map(|e| e.code.as_str()), Some("ERR_MODEL_NOT_FOUND"));
+    assert_eq!(missing_status.error.as_ref().map(|e| e.code.as_str()), Some("resource_missing"));
 
     // 4. Probe and prepare with installed synthetic model
-    let registry_content = std::fs::read_to_string(models_dir.join("qnn-models.json")).expect("read registry");
+    let reg_path = exe_dir.join("qnn-models.json");
+    assert!(reg_path.exists(), "qnn-models.json missing beside worker exe");
+    let registry_content = std::fs::read_to_string(&reg_path).expect("read registry");
     let registry: serde_json::Value = serde_json::from_str(&registry_content).expect("parse registry");
     let profile = &registry["profiles"][0];
-    let model_sha256 = profile["model_sha256"].as_str().unwrap_or("").to_string();
+    let profile_id = profile["id"].as_str().expect("profile id");
+    let model_sha256 = profile["sha256"].as_str().unwrap_or("").to_string();
 
     adapter.set_resource_identity(V2ResourceIdentity {
-        id: "select-subject-v1".into(),
+        id: profile_id.into(),
         version: "1.0.0".into(),
         manifest_digest: model_sha256,
     });
 
-    let probe_status = adapter.probe("select-subject-v1", Some("qnn.htp"), &ctx)
+    let probe_status = adapter.probe(profile_id, Some("qnn.htp"), &ctx)
         .expect("probe ready model");
     assert_eq!(probe_status.status, "ready");
 
-    let prepare_status = adapter.prepare("select-subject-v1", Some("qnn.htp"), &ctx)
+    let prepare_status = adapter.prepare(profile_id, Some("qnn.htp"), &ctx)
         .expect("prepare ready model");
     assert_eq!(prepare_status.status, "ready");
 
@@ -349,9 +337,10 @@ fn rust_csharp_v2_process_interop_regression() {
             icc_profile: Vec::new(),
             data: vec![0.5, 0.5, 0.5],
         },
-        resource: Some("select-subject-v1".into()),
+        resource: Some(profile_id.into()),
         device: Some("qnn.htp".into()),
         allow_fallback: false,
+        selection: None,
     };
 
     let resp = adapter.run(&req, &ctx).expect("adapter run 1x1 image");
@@ -363,4 +352,5 @@ fn rust_csharp_v2_process_interop_regression() {
     assert_eq!(resp.output.image.data.len(), 1);
     assert!((0.0..=1.0).contains(&resp.output.image.data[0]));
     assert_eq!(resp.execution.devices, vec!["qnn.htp".to_string()]);
+    assert_eq!(resp.execution.backend, "qnn");
 }
