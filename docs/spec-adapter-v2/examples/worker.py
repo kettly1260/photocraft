@@ -447,7 +447,22 @@ class WorkerSession:
                 err_json["action"] = req_json.get("action", "probe")
             return encode_frame(MAGIC_RES, err_json, [])
 
-        # 1. Enforce unique request_id in single session
+        # 1. Repeated hello handshake closes endpoint (README.md:43)
+        if self.state != "UNINITIALIZED" and req_type == "hello":
+            self.state = "CLOSED"
+            err_json = {
+                "protocol": 2,
+                "request_id": req_id,
+                "type": "hello",
+                "status": "error",
+                "message": "Repeated hello handshake forbidden: closes session endpoint",
+                "error": {"code": "invalid_request", "retryable": False},
+                "sections": [],
+            }
+            self.seen_request_ids.add(req_id)
+            return encode_frame(MAGIC_RES, err_json, [])
+
+        # 2. Enforce unique request_id in single session
         if req_id in self.seen_request_ids:
             err_json = {
                 "protocol": 2,
@@ -462,7 +477,7 @@ class WorkerSession:
                 err_json["action"] = req_json.get("action", "probe")
             return encode_frame(MAGIC_RES, err_json, [])
 
-        # 2. Enforce session initialization via hello handshake (Control/run before negotiation closes endpoint)
+        # 3. Enforce session initialization via hello handshake (Control/run before negotiation closes endpoint)
         if self.state == "UNINITIALIZED" and req_type != "hello":
             self.state = "CLOSED"
             err_json = {
@@ -476,21 +491,6 @@ class WorkerSession:
             }
             if req_type == "control":
                 err_json["action"] = req_json.get("action", "probe")
-            self.seen_request_ids.add(req_id)
-            return encode_frame(MAGIC_RES, err_json, [])
-
-        # 3. Repeated hello handshake closes endpoint (README.md:43)
-        if self.state != "UNINITIALIZED" and req_type == "hello":
-            self.state = "CLOSED"
-            err_json = {
-                "protocol": 2,
-                "request_id": req_id,
-                "type": "hello",
-                "status": "error",
-                "message": "Repeated hello handshake forbidden: closes session endpoint",
-                "error": {"code": "invalid_request", "retryable": False},
-                "sections": [],
-            }
             self.seen_request_ids.add(req_id)
             return encode_frame(MAGIC_RES, err_json, [])
 
