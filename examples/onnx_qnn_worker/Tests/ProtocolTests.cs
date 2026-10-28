@@ -137,6 +137,38 @@ internal static partial class Program
             Reject<WorkerException>(() => Protocol.Write(new MemoryStream(), reply with { Mask = [float.NaN, 0, 0, 0] }));
             Reject<WorkerException>(() => Protocol.Write(new MemoryStream(), reply with { Header = reply.Header with { execution = new(["cpu"], "cpu", "fallback") } }));
         });
+        Run("protocol/v2-hello-and-status-frames", () =>
+        {
+            var hello = ReplyV2.Hello("test-req-1");
+            using var helloStream = new MemoryStream();
+            Protocol.WriteV2(helloStream, hello);
+            byte[] helloBytes = helloStream.ToArray();
+            Check(helloBytes.AsSpan(0, 8).SequenceEqual("PCADRES2"u8));
+            uint hLen = BinaryPrimitives.ReadUInt32LittleEndian(helloBytes.AsSpan(8, 4));
+            uint secCount = BinaryPrimitives.ReadUInt32LittleEndian(helloBytes.AsSpan(12 + (int)hLen, 4));
+            Check(secCount == 0);
+
+            var status = ReplyV2.Status("test-req-2", "probe", "needs_model", "Model file not found", "missing_model", "ERR_MODEL_NOT_FOUND");
+            using var statusStream = new MemoryStream();
+            Protocol.WriteV2(statusStream, status);
+            byte[] statusBytes = statusStream.ToArray();
+            Check(statusBytes.AsSpan(0, 8).SequenceEqual("PCADRES2"u8));
+        });
+        Run("protocol/v2-decode-request-and-sections", () =>
+        {
+            using var ms = new MemoryStream();
+            using (var writer = new BinaryWriter(ms, Encoding.UTF8, leaveOpen: true))
+            {
+                byte[] headerJson = "{\"protocol\":2,\"request_id\":\"v2-1\",\"type\":\"hello\",\"sections\":[],\"negotiation\":{\"wire_versions\":[2],\"supported_features\":[],\"required_features\":[]}}"u8.ToArray();
+                writer.Write("PCADREQ2"u8);
+                writer.Write((uint)headerJson.Length);
+                writer.Write(headerJson);
+                writer.Write(0u); // 0 sections
+            }
+            ms.Position = 0;
+            var req = Protocol.ReadV2(ms);
+            Check(req.Action == "hello" && req.RequestId == "v2-1");
+        });
         Run("arguments/reject-unc-ads-relative-and-wrong-order", () =>
         {
             Reject<WorkerException>(() => Arguments.Parse([]));

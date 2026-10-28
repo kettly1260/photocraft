@@ -51,74 +51,74 @@ FIXED_ORACLE_VECTORS = {
     "wire-hello-req.bin": {
         "magic": MAGIC_REQ,
         "schema": "wire-request.schema.json",
-        "header_length": 227,
+        "header_length": 257,
         "section_count": 0,
         "payload_length": 0,
-        "size": 243,
-        "sha256": "81f181f0868f0cb15a96839350616b64f331fc3c8f87ee9e4ba6f59c256037f5",
+        "size": 273,
+        "sha256": "b16fded34c6a6bd65a0487bc8f84eab2682515c2846a562c03f2f3c753995742",
     },
     "wire-hello-resp.bin": {
         "magic": MAGIC_RES,
         "schema": "wire-response.schema.json",
-        "header_length": 279,
+        "header_length": 303,
         "section_count": 0,
         "payload_length": 0,
-        "size": 295,
-        "sha256": "3870fe6f6cf5ce9a82e9874ccbf3e7b233f27f0506eb3e6ef61835b6a71bb952",
+        "size": 319,
+        "sha256": "5bebc056cd5c80f96959c77240f7ba031a9d9b2999b76377206fb6caac55bfbd",
     },
     "wire-control-probe-req.bin": {
         "magic": MAGIC_REQ,
         "schema": "wire-request.schema.json",
-        "header_length": 446,
+        "header_length": 427,
         "section_count": 0,
         "payload_length": 0,
-        "size": 462,
-        "sha256": "d7790bdfba49e52516a7f5168e31006a88b56f8f5ea0e75a61e73ea515d427d1",
+        "size": 443,
+        "sha256": "eecfed9e40f468921009da4ba3d94d54d83f850c28fbd3e29e29295a448cc4f2",
     },
     "wire-status-ready-resp.bin": {
         "magic": MAGIC_RES,
         "schema": "wire-response.schema.json",
-        "header_length": 200,
+        "header_length": 257,
         "section_count": 0,
         "payload_length": 0,
-        "size": 216,
-        "sha256": "1ad78ea822f36070fa3b455b8b93931be6f19ea911e359fe6788bf7d024ee184",
+        "size": 273,
+        "sha256": "9c12daccb0ff9e6c979c7b33744fe27bf8e82d54006e10e448951d0a1c230e95",
     },
     "wire-control-prepare-req.bin": {
         "magic": MAGIC_REQ,
         "schema": "wire-request.schema.json",
-        "header_length": 450,
+        "header_length": 472,
         "section_count": 0,
         "payload_length": 0,
-        "size": 466,
-        "sha256": "bb151b6932e67df1bb2fe2a7e7804473cf29e9d6d45da4e5262c5b364177ebf9",
+        "size": 488,
+        "sha256": "c38aeef50e1a53de4141ea449fbd1449fd5afb5bc8f0067e57cadd8f72190098",
     },
     "wire-status-needs-model-resp.bin": {
         "magic": MAGIC_RES,
         "schema": "wire-response.schema.json",
-        "header_length": 298,
+        "header_length": 341,
         "section_count": 0,
         "payload_length": 0,
-        "size": 314,
-        "sha256": "a703d98fb827e8a9d18721c5aa811a9e334df5d99b2eb25e6837bfdb3c18b76c",
+        "size": 357,
+        "sha256": "fb7f74bb840216afa1856df20ecdc77f466b03df7cbf35b873a22b2fb9fb90cb",
     },
     "wire-run-req.bin": {
         "magic": MAGIC_REQ,
         "schema": "wire-request.schema.json",
-        "header_length": 831,
+        "header_length": 826,
         "section_count": 2,
         "payload_length": 96,
-        "size": 975,
-        "sha256": "5a8b54350325fecf52bbd922ec92569e45e7f13b63200a747971775a2f520775",
+        "size": 970,
+        "sha256": "246ad16baa386517d0873bddd4dba072e66a059fa68105e5906d6b16ad4b6e9f",
     },
     "wire-run-resp.bin": {
         "magic": MAGIC_RES,
         "schema": "wire-response.schema.json",
-        "header_length": 887,
+        "header_length": 1121,
         "section_count": 1,
         "payload_length": 24,
-        "size": 943,
-        "sha256": "2d890bf7c5bc674d82f7678d8a7051bb3b7b20963577d4da0be697ee3e6c0c53",
+        "size": 1177,
+        "sha256": "db3290502ea2490cf82f587a1e1d3a8d323d546a2abbc9869039f5daf7a79738",
     },
 }
 
@@ -288,8 +288,8 @@ def test_malformed_frames():
     bad_mask_color_json = (
         b'{"protocol":2,"request_id":"req-001","type":"run","operation":"synthetic-mask",'
         b'"sections":[{"kind":"f32","offset":0,"length":12},{"kind":"f32","offset":12,"length":4}],'
-        b'"inputs":{"source":{"kind":"image","width":1,"height":1,"channels":3,"data_section_index":0}},'
-        b'"params":{"mask":{"kind":"mask","width":1,"height":1,"channels":1,"color_encoding":"srgb","data_section_index":1}}}'
+        b'"inputs":{"source":{"kind":"image","width":1,"height":1,"channels":3,"data_section_index":0},'
+        b'"selection":{"kind":"mask","width":1,"height":1,"channels":1,"color_encoding":"srgb","data_section_index":1}}}'
     )
     mask_sec_table = struct.pack("<IIII", KIND_F32, 0, 0, 12) + struct.pack("<IIII", KIND_F32, 0, 12, 4)
     bad_mask_color = (
@@ -305,8 +305,8 @@ def test_malformed_frames():
     bad_mask_icc_json = (
         b'{"protocol":2,"request_id":"req-001","type":"run","operation":"synthetic-mask",'
         b'"sections":[{"kind":"f32","offset":0,"length":12},{"kind":"f32","offset":12,"length":4},{"kind":"icc","offset":16,"length":16}],'
-        b'"inputs":{"source":{"kind":"image","width":1,"height":1,"channels":3,"data_section_index":0}},'
-        b'"params":{"mask":{"kind":"mask","width":1,"height":1,"channels":1,"icc_section_index":2,"data_section_index":1}}}'
+        b'"inputs":{"source":{"kind":"image","width":1,"height":1,"channels":3,"data_section_index":0},'
+        b'"selection":{"kind":"mask","width":1,"height":1,"channels":1,"icc_section_index":2,"data_section_index":1}}}'
     )
     mask_icc_sec_table = (
         struct.pack("<IIII", KIND_F32, 0, 0, 12)
@@ -363,8 +363,8 @@ def test_malformed_frames():
         ("Unaligned Section Offset", bytes(bad_unaligned), ValueError, "STAGE_SEC_TABLE", "is not 4-byte aligned"),
         ("Section Exceeding Payload Bound", bytes(bad_overflow), ValueError, "STAGE_PAYLOAD_BOUND", "exceeds payload budget"),
         ("UTF-8 BOM in JSON Header", bad_bom, ValueError, "STAGE_JSON_BOM", "UTF-8 byte order mark (BOM) is forbidden"),
-        ("Duplicate JSON Keys", bad_dup, ValueError, "STAGE_JSON_PARSE", "Duplicate key found in JSON object"),
-        ("JSON Nesting Exceeding Limit", bad_deep, ValueError, "STAGE_JSON_BUDGET", "JSON nesting depth exceeded limit 16"),
+        ("Duplicate JSON Keys", bad_dup, ValueError, "STAGE_JSON_PARSE", "Duplicate JSON key:"),
+        ("JSON Nesting Exceeding Limit", bad_deep, ValueError, "STAGE_FAST_NESTING_SCAN", "JSON nesting depth exceeded limit 16"),
         ("Direction Violation - Request with Status", bad_req_status, ValueError, "STAGE_DIRECTION", "Request frame (PCADREQ2) contains forbidden 'status' field"),
         ("Direction Violation - Response with Inputs", bad_res_inputs, ValueError, "STAGE_DIRECTION", "Response frame (PCADRES2) contains forbidden request fields"),
         ("Mask Port with Forbidden Color Encoding", bad_mask_color, ValueError, "STAGE_PORT_POLICY", "forbidden to declare 'color_encoding'"),
@@ -395,11 +395,11 @@ def test_strict_boundaries():
     # Case 1.1: Header Length exactly 1 MiB (1,048,576 bytes) -> Valid reachable positive
     pad_items = []
     # Total available: 1_048_576 - 104 (prefix) - 2 (suffix) = 1_048_470 bytes.
-    # 300 properties: 299 with comma (11 bytes fixed), 1 without (10 bytes fixed) -> 3299 fixed.
-    # 1_048_470 - 3299 = 1_045_171 chars across 300 string values.
-    # 1_045_171 // 300 = 3483, remainder = 271.
+    # 300 properties: 299 with comma (8 bytes fixed "pXXX":"" + 1 comma = 9 bytes), 1 without (8 bytes fixed) -> 2699 fixed.
+    # 1_048_470 - 2699 = 1_045_771 chars across 300 string values.
+    # 1_045_771 // 300 = 3485, remainder = 271.
     for i in range(300):
-        val_len = 3484 if i < 271 else 3483
+        val_len = 3486 if i < 271 else 3485
         pad_items.append(f'"p{i:03d}":"' + ("a" * val_len) + '"')
     pad_body = ",".join(pad_items).encode("ascii")
     prefix = b'{"protocol":2,"request_id":"req-bound-1","type":"hello","client":{"name":"test","version":"1.0"},"pad":{'

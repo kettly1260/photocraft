@@ -19,6 +19,135 @@ internal sealed record Reply(ResponseHeader Header, float[]? Mask = null)
     internal static Reply Status(string status, string message) => new(new ResponseHeader(1, status, message));
 }
 
+// ---------------------------------------------------------------------------
+// Protocol v2 Records
+// ---------------------------------------------------------------------------
+
+internal sealed record SectionEntry(uint Kind, uint Reserved, uint Offset, uint Length);
+internal sealed record V2SectionMeta(string kind, uint offset, uint length);
+internal sealed record V2ClientNegotiation(int[]? wire_versions, string[]? supported_features, string[]? required_features);
+internal sealed record V2ServerNegotiation(int selected_wire_version, string[] enabled_features);
+internal sealed record V2ResourceIdentity(string id, string? version, string? manifest_digest);
+internal sealed record V2DevicePolicy(string mode, string[] allowed_backends, bool allow_graph_fallback);
+internal sealed record V2Port(string kind, int? x, int? y, int width, int height, int channels,
+    string? color_mode, int? source_depth, bool? alpha, string? color_encoding, int data_section_index, int? icc_section_index);
+internal sealed record V2Device(string id, string kind);
+internal sealed record V2Timing(double cpu_preprocess_ms, double graph_execution_ms, double cpu_postprocess_ms, double total_ms);
+internal sealed record V2Execution(V2DevicePolicy? requested_policy, V2Device[] devices, string backend,
+    string runtime_id, string runtime_version, V2ResourceIdentity? resource, string? configuration_digest,
+    bool graph_partitioned, bool graph_fallback, string? fallback_reason, string? evidence, V2Timing timing);
+internal sealed record V2ErrorDetail(string code, bool retryable);
+
+internal sealed record V2RequestHeader(
+    int protocol,
+    string request_id,
+    string type,
+    string? action,
+    string? operation,
+    string? operation_version,
+    V2ResourceIdentity? resource,
+    V2DevicePolicy? device_policy,
+    V2ClientNegotiation? negotiation,
+    JsonElement? @params,
+    Dictionary<string, V2Port>? inputs,
+    JsonElement? sections
+);
+
+internal sealed record V2ResponseHeader(
+    int protocol,
+    string request_id,
+    string type,
+    string status,
+    string message,
+    string? action = null,
+    string? readiness = null,
+    V2ServerNegotiation? negotiation = null,
+    Dictionary<string, V2Port>? outputs = null,
+    V2Execution? execution = null,
+    V2ErrorDetail? error = null,
+    V2SectionMeta[]? sections = null
+);
+
+internal sealed record V2ParsedRequest(
+    string Action,
+    string RequestId,
+    V2ResourceIdentity? Resource,
+    V2DevicePolicy? DevicePolicy,
+    Dictionary<string, V2Port>? Inputs,
+    List<SectionEntry> Sections,
+    byte[] Payload
+);
+
+internal sealed record ReplyV2(V2ResponseHeader Header, List<SectionEntry> SectionTable, byte[] Payload)
+{
+    internal static ReplyV2 Hello(string requestId) => new(
+        new V2ResponseHeader(
+            2,
+            requestId,
+            "hello",
+            "negotiated",
+            "PhotoCraft ONNX QNN Worker v2 ready",
+            negotiation: new V2ServerNegotiation(2, ["image-mask-v2", "same-geometry", "resource-control"]),
+            sections: []
+        ),
+        [],
+        []
+    );
+
+    internal static ReplyV2 Status(string requestId, string action, string status, string message, string? readiness = null, string? errorCode = null) => new(
+        new V2ResponseHeader(
+            2,
+            requestId,
+            "control",
+            status,
+            message,
+            action: action,
+            readiness: readiness ?? (status == "ready" ? "ready" : "not_ready"),
+            error: errorCode is not null ? new V2ErrorDetail(errorCode, false) : null,
+            sections: []
+        ),
+        [],
+        []
+    );
+
+    internal static ReplyV2 RunOk(string requestId, float[] mask, int width, int height, int x, int y, double execMs)
+    {
+        byte[] payload = new byte[mask.Length * 4];
+        Buffer.BlockCopy(mask, 0, payload, 0, payload.Length);
+        var secEntry = new SectionEntry(0, 0, 0, (uint)payload.Length);
+        var port = new V2Port("mask", x, y, width, height, 1, "gray", 32, false, null, 0, null);
+        var outputs = new Dictionary<string, V2Port> { ["selection"] = port };
+        var exec = new V2Execution(
+            null,
+            [new V2Device("qnn.htp", "npu")],
+            "qnn",
+            "qualcomm-qnn",
+            "1.24.4",
+            null,
+            null,
+            false,
+            false,
+            null,
+            "qnn-npu-direct",
+            new V2Timing(0.0, execMs, 0.0, execMs)
+        );
+        return new ReplyV2(
+            new V2ResponseHeader(
+                2,
+                requestId,
+                "run",
+                "ok",
+                "Inference complete",
+                outputs: outputs,
+                execution: exec,
+                sections: [new V2SectionMeta("f32", 0, (uint)payload.Length)]
+            ),
+            [secEntry],
+            payload
+        );
+    }
+}
+
 internal static class Protocol
 {
     internal const string Operation = "select-subject";
@@ -27,7 +156,13 @@ internal static class Protocol
     internal const int MaxHeaderBytes = 1024 * 1024;
     internal const int MaxPixels = 16 * 1024 * 1024;
     internal const int MaxSide = 16384;
-    private static readonly byte[] RequestMagic = "PCADREQ1"u8.ToArray();
+    internal const int MaxSections = 64;
+    internal const int MaxPayloadBytes = 256 * 1024 * 1024;
+
+    private static readonly byte[] RequestMagicV1 = "PCADREQ1"u8.ToArray();
+    private static readonly byte[] RequestMagicV2 = "PCADREQ2"u8.ToArray();
+    private static readonly byte[] ResponseMagicV1 = "PCADRES1"u8.ToArray();
+    private static readonly byte[] ResponseMagicV2 = "PCADRES2"u8.ToArray();
 
     internal static JsonDocument ReadHeader(Stream input)
     {
@@ -36,7 +171,7 @@ internal static class Protocol
             throw new WorkerException("Request exceeds worker byte limit.");
         Span<byte> prefix = stackalloc byte[12];
         input.ReadExactly(prefix);
-        if (!prefix[..8].SequenceEqual(RequestMagic)) throw new WorkerException("Expected PCADREQ1 request magic.");
+        if (!prefix[..8].SequenceEqual(RequestMagicV1)) throw new WorkerException("Expected PCADREQ1 request magic.");
         uint length = BinaryPrimitives.ReadUInt32LittleEndian(prefix[8..]);
         if (length is 0 or > MaxHeaderBytes) throw new WorkerException("JSON header must be 1..1048576 bytes.");
         if (input.Length - input.Position < length) throw new WorkerException("Truncated JSON header.");
@@ -50,6 +185,81 @@ internal static class Protocol
             return document;
         }
         catch { document.Dispose(); throw; }
+    }
+
+    internal static V2ParsedRequest ReadV2(Stream input)
+    {
+        if (!input.CanSeek) throw new WorkerException("A seekable bounded request file is required.");
+        if (input.Length > 16L + MaxHeaderBytes + (long)MaxSections * 16 + MaxPayloadBytes)
+            throw new WorkerException("Request exceeds worker v2 byte limit.");
+
+        Span<byte> prefix = stackalloc byte[12];
+        input.ReadExactly(prefix);
+        if (!prefix[..8].SequenceEqual(RequestMagicV2)) throw new WorkerException("Expected PCADREQ2 request magic.");
+
+        uint headerLength = BinaryPrimitives.ReadUInt32LittleEndian(prefix[8..]);
+        if (headerLength is 0 or > MaxHeaderBytes) throw new WorkerException("JSON header must be 1..1048576 bytes.");
+        if (input.Length - input.Position < headerLength + 4) throw new WorkerException("Truncated JSON header.");
+
+        var headerBytes = new byte[(int)headerLength];
+        input.ReadExactly(headerBytes);
+        if (headerBytes.Length >= 3 && headerBytes[0] == 0xef && headerBytes[1] == 0xbb && headerBytes[2] == 0xbf)
+            throw new WorkerException("UTF-8 byte order mark (BOM) is forbidden in protocol v2.");
+
+        using var document = Json.Parse(headerBytes);
+        var root = document.RootElement;
+        if (!root.TryGetProperty("protocol", out var protoElem) || protoElem.GetInt32() != 2)
+            throw new WorkerException("Only adapter protocol 2 is supported in v2 frames.");
+
+        Span<byte> secCountBuf = stackalloc byte[4];
+        input.ReadExactly(secCountBuf);
+        uint sectionCount = BinaryPrimitives.ReadUInt32LittleEndian(secCountBuf);
+        if (sectionCount > MaxSections)
+            throw new WorkerException($"Section count {sectionCount} exceeds limit of {MaxSections}.");
+
+        long secTableBytes = (long)sectionCount * 16;
+        if (input.Length - input.Position < secTableBytes)
+            throw new WorkerException("Truncated section table.");
+
+        var sections = new List<SectionEntry>((int)sectionCount);
+        Span<byte> entryBuf = stackalloc byte[16];
+        for (int i = 0; i < sectionCount; i++)
+        {
+            input.ReadExactly(entryBuf);
+            uint kind = BinaryPrimitives.ReadUInt32LittleEndian(entryBuf[0..4]);
+            uint reserved = BinaryPrimitives.ReadUInt32LittleEndian(entryBuf[4..8]);
+            uint offset = BinaryPrimitives.ReadUInt32LittleEndian(entryBuf[8..12]);
+            uint length = BinaryPrimitives.ReadUInt32LittleEndian(entryBuf[12..16]);
+
+            if (reserved != 0) throw new WorkerException($"Section {i} reserved field is non-zero.");
+            if (offset % 4 != 0) throw new WorkerException($"Section {i} offset is not 4-byte aligned.");
+            if (length % 4 != 0) throw new WorkerException($"Section {i} length is not 4-byte aligned.");
+            sections.Add(new SectionEntry(kind, reserved, offset, length));
+        }
+
+        long payloadLength = input.Length - input.Position;
+        if (payloadLength > MaxPayloadBytes)
+            throw new WorkerException($"Payload length {payloadLength} exceeds limit of {MaxPayloadBytes}.");
+
+        var payload = new byte[(int)payloadLength];
+        input.ReadExactly(payload);
+
+        foreach (var sec in sections)
+        {
+            if ((long)sec.Offset + sec.Length > payload.Length)
+                throw new WorkerException("Section bounds exceed payload buffer.");
+        }
+
+        var header = root.Deserialize<V2RequestHeader>(Json.Options) ?? throw new WorkerException("Missing v2 request header.");
+        return new V2ParsedRequest(
+            header.type == "run" ? "run" : (header.action ?? header.type),
+            header.request_id,
+            header.resource,
+            header.device_policy,
+            header.inputs,
+            sections,
+            payload
+        );
     }
 
     internal static void Control(JsonElement root, Stream input)
@@ -94,7 +304,6 @@ internal static class Protocol
         var samples = new float[count];
         using var reader = new BinaryReader(input, Encoding.UTF8, leaveOpen: true);
         for (int i = 0; i < count; i++) samples[i] = Sdr(reader.ReadSingle());
-        // Optional selection is validated but not used as a seed or multiplied into the authoritative mask.
         if (header.selection is not null)
             for (int i = 0; i < pixels; i++) Sdr(reader.ReadSingle());
         End(input);
@@ -118,6 +327,7 @@ internal static class Protocol
             throw new WorkerException("Only finite SDR [0,1] RGB/alpha is supported; HDR is rejected, not clamped.");
         return sample;
     }
+
     private static void End(Stream input)
     {
         if (input.ReadByte() != -1) throw new WorkerException("Unexpected trailing request bytes.");
@@ -145,10 +355,30 @@ internal static class Protocol
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(h, Json.Options);
         if (json.Length > MaxHeaderBytes) throw new WorkerException("Oversized response header.");
         using var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true);
-        writer.Write("PCADRES1"u8);
+        writer.Write(ResponseMagicV1);
         writer.Write((uint)json.Length);
         writer.Write(json);
         if (reply.Mask is { } data) foreach (float value in data) writer.Write(value);
+        writer.Flush();
+    }
+
+    internal static void WriteV2(Stream stream, ReplyV2 reply)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(reply.Header, Json.Options);
+        if (json.Length > MaxHeaderBytes) throw new WorkerException("Oversized v2 response header.");
+        using var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true);
+        writer.Write(ResponseMagicV2);
+        writer.Write((uint)json.Length);
+        writer.Write(json);
+        writer.Write((uint)reply.SectionTable.Count);
+        foreach (var sec in reply.SectionTable)
+        {
+            writer.Write(sec.Kind);
+            writer.Write(sec.Reserved);
+            writer.Write(sec.Offset);
+            writer.Write(sec.Length);
+        }
+        writer.Write(reply.Payload);
         writer.Flush();
     }
 
@@ -167,6 +397,19 @@ internal static class Protocol
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
+
+    internal static void PublishV2(string path, ReplyV2 reply)
+    {
+        string directory = Path.GetDirectoryName(path) ?? throw new WorkerException("Response must have a parent directory.");
+        string temporary = Path.Combine(directory, ".photocraft-qnn-v2-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            using (var file = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            { WriteV2(file, reply); file.Flush(flushToDisk: true); }
+            File.Move(temporary, path, overwrite: false);
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
 }
 
 internal sealed record Arguments(string Action, string Request, string Response)
@@ -174,7 +417,8 @@ internal sealed record Arguments(string Action, string Request, string Response)
     internal static Arguments Parse(string[] args)
     {
         if (args.Length != 6 || args[0] != "--action" || args[2] != "--request" || args[4] != "--response" ||
-            args[1] is not ("probe" or "prepare" or "run")) throw new WorkerException("Expected exactly --action probe|prepare|run --request absolute --response absolute.");
+            args[1] is not ("hello" or "probe" or "prepare" or "run"))
+            throw new WorkerException("Expected exactly --action hello|probe|prepare|run --request absolute --response absolute.");
         string request = LocalPath(args[3]);
         string response = LocalPath(args[5]);
         if (request.Equals(response, StringComparison.OrdinalIgnoreCase) ||

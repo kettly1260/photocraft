@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use photocraft_plugins::adapter::{self, Adapter, Context, Descriptor, Request, Response};
 use photocraft_plugins::worker::{WorkerAdapter, WorkerStatus};
+use photocraft_plugins::worker_v2::WorkerAdapterV2;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -208,8 +209,13 @@ fn verify(record: &Record, directory: &Path) -> Result<()> {
     }
     Ok(())
 }
+enum InnerWorker {
+    V1(WorkerAdapter),
+    V2(WorkerAdapterV2),
+}
+
 struct VerifiedWorker {
-    inner: WorkerAdapter,
+    inner: InnerWorker,
     record: Record,
     directory: PathBuf,
 }
@@ -217,8 +223,12 @@ impl VerifiedWorker {
     fn new(record: &Record, directory: PathBuf) -> Result<Self> {
         verify(record, &directory)?;
         let executable = launch_path(&record.manifest, &directory)?;
-        let inner =
-            WorkerAdapter::new(executable, record.manifest.descriptor.clone(), Duration::from_millis(record.manifest.timeout_ms)).map_err(adapter_error)?;
+        let timeout = Duration::from_millis(record.manifest.timeout_ms);
+        let inner = if record.manifest.package_version >= 2 {
+            InnerWorker::V2(WorkerAdapterV2::new(executable, record.manifest.descriptor.clone(), timeout).map_err(adapter_error)?)
+        } else {
+            InnerWorker::V1(WorkerAdapter::new(executable, record.manifest.descriptor.clone(), timeout).map_err(adapter_error)?)
+        };
         Ok(Self { inner, record: record.clone(), directory })
     }
     fn check(&self) -> adapter::Result<()> {
@@ -231,7 +241,10 @@ impl Adapter for VerifiedWorker {
     }
     fn run(&self, request: &Request, context: &dyn Context) -> adapter::Result<Response> {
         self.check()?;
-        self.inner.run(request, context)
+        match &self.inner {
+            InnerWorker::V1(w) => w.run(request, context),
+            InnerWorker::V2(w) => w.run(request, context),
+        }
     }
 }
 impl PackageStore {
@@ -470,12 +483,32 @@ fn check_status(s: &mut Session, p: &Value, prepare: bool) -> Result<Value> {
         move |ctx| {
             let context = JobContext(ctx.clone());
             worker.check().map_err(adapter_error)?;
-            let result: adapter::Result<WorkerStatus> = if prepare { worker.inner.prepare(&context) } else { worker.inner.probe(&context) };
+            let status_val = match &worker.inner {
+                InnerWorker::V1(w) => {
+                    let result: adapter::Result<WorkerStatus> = if prepare { w.prepare(&context) } else { w.probe(&context) };
+                    match result {
+                        Ok(status) => serde_json::to_value(status).map_err(io_error)?,
+                        Err(error) => json!({"state":"error","message":error.to_string()}),
+                    }
+                }
+                InnerWorker::V2(w) => {
+                    let result = if prepare {
+                        w.prepare("default-model", None, &context)
+                    } else {
+                        w.probe("default-model", None, &context)
+                    };
+                    match result {
+                        Ok(status) => json!({
+                            "state": status.status,
+                            "message": status.message,
+                            "readiness": status.readiness,
+                        }),
+                        Err(error) => json!({"state":"error","message":error.to_string()}),
+                    }
+                }
+            };
             ctx.check()?;
-            Ok(match result {
-                Ok(status) => serde_json::to_value(status).map_err(io_error)?,
-                Err(error) => json!({"state":"error","message":error.to_string()}),
-            })
+            Ok(status_val)
         },
         move |s, status| {
             if let Some(entry) = s.adapter_packages.packages.get_mut(&id) {

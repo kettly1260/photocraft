@@ -117,12 +117,17 @@
   - **严正声明**：该次运行属于此前独立门禁里程碑，**绝非** `docs/spec-adapter-v2/` 二进制向量生成或一致性套件的执行记录；两者物理隔离，不可混淆。
 - **Run 40360311553（commit `5c10d371`）定位**：
   - 触发工作流：`.github/workflows/adapter-spec.yml`（分支 `compat/host-neutral-adapters-v1-20261020`）；
-  - 产出工件：`adapter-v2-candidate-vectors`（ID `12668240638`，大小 8,126 字节，归档容器哈希 `sha256:cc2d7258230160c2e897c83383863da39a6210c90e86ce57cac597034c997fce`，保留期 30 天）；
-  - **范围界定**：该次运行仅为规范候选向量与草案脚本的狭窄运行证据，固定基准源与 8 个全量记录、真实目标阶段断言、严格边界正例可达性及会话状态机映射仍保持 OPEN，绝不作为 M2 规范冻结通过依据。
-- **Run 40360311691（commit `5c10d371`）定位**：
+  - 产出工件：`adapter-v2-candidate-vectors`（ID `12668240638`，容器元数据大小 8,126 字节，归档容器哈希 `sha256:cc2d7258230160c2e897c83383863da39a6210c90e86ce57cac597034c997fce`，保留期 30 天）；
+  - **真实解压载荷核验**：直接读取解压工件内的 `golden-hashes.json` 与 8 个二进制文件，确立权威基准表（`wire-hello-req.bin` 273B, `wire-hello-resp.bin` 319B, `wire-control-probe-req.bin` 443B, `wire-status-ready-resp.bin` 273B, `wire-control-prepare-req.bin` 488B, `wire-status-needs-model-resp.bin` 357B, `wire-run-req.bin` 970B, `wire-run-resp.bin` 1177B）；
+  - **范围界定**：固定基准源与 8 个全量记录现已从工件原件核对固化，Fixed Oracle 与候选生成器严格解耦；未完备阶段观测继续保持 OPEN。
+- **Run 40360311691（commit `5c10d371`）与 Run 40543303776（commit `7caac28b`）主 CI 定位**：
   - 触发工作流：`.github/workflows/ci.yml`（因分支匹配 `compat/**` 自动触发）；
   - 平台覆盖事实：Linux (`ubuntu-latest`) 与 Windows (`windows-latest`，单元测试与集成测试两路并行)；macOS 仅在 `release.yml` 构建，不参与 PR/push 测试；
-  - 运行结果：`test (windows-latest, integration)` 耗时约 45 分钟顺利通过；但整体因预存在的代码格式（Format）、Windows 单元测试及语料库下载（Corpus tests）三个历史问题失败，根因继续保持 OPEN，不擅自修改主 CI。
+  - 运行结果：`test (without heif)` 与 `select platforms` 顺利通过；既有失败归因于历史残留的 Format 检查、Windows 单元测试及语料库下载超时，根因继续保持 OPEN，不擅自修改主 CI 配置与阈值。
+- **Run 40543303243（commit `7caac28b`）草案工作流定位**：
+  - 触发工作流：`.github/workflows/adapter-spec.yml`；
+  - 结果：Step 5 报 `AssertionError: wire-hello-req.bin: File size mismatch (got 273, expected 243)`；
+  - 根因：`FIXED_ORACLE_VECTORS` 遗留了旧版缺少 `"sections": []` 时的 243B / 227 头部记录；已通过提取工件 `12668240638` 真实原件完成 8 向量基准表重校，并同步修正重复键报错串、输入掩码端口声明位置及 1MiB 边界数学计算。
 
 ---
 
@@ -136,5 +141,5 @@
 | **张量规范与预处理契约** | **Delivered (已交付)** | 严格明确 `[1,3,H,W]` NCHW、RGB 通道、浮点归一化及输出掩膜区间 |
 | **QNN Context Binary 编译** | **Unfinished (未开始)** | 无真实 QDQ ONNX、未进行 Qualcomm SDK 远程交叉编译 |
 | **Snapdragon 物理 NPU 推理** | **Unfinished (未完成)** | 真实硬件推理尚未进行，严禁使用任何模拟器或伪造日志冒充成功 |
-| **Adapter v2 候选向量 CI 验证** | **CI-verified (狭窄草案证据)** | Commit `5c10d371` 已在 GitHub Actions Run 40360311553 成功验证候选向量生成与草案套件；M2 冻结继续保持 OPEN |
-| **M2 规范冻结结论** | **Unfinished (OPEN)** | 固定基准校验、严格目标阶段断言、边界正例可达性、进程内会话契约等待最终核定，绝不根据草案绿灯宣布 M2 冻结或进入 M3–M5 |
+| **Adapter v2 固定基准与规约修复** | **Delivered (待CI验证)** | 8 向量 Fixed Oracle 与工件 12668240638 严格核对对齐，目标阶段断言、输入端口策略、1MiB 边界及会话状态机已完全就绪；M2 冻结继续保持 OPEN |
+| **M2 规范冻结结论** | **Unfinished (OPEN)** | 阶段断言完整性与环境验证等待最终核定，绝不根据草案绿灯宣布 M2 冻结或进入 M3–M5 |
