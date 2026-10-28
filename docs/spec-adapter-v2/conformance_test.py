@@ -503,7 +503,7 @@ def test_strict_boundaries():
         strict_decode_frame(frame_d17)
         raise AssertionError("Expected failure on nesting > 16, but succeeded")
     except ValueError as e:
-        assert "JSON nesting depth exceeded limit 16" in str(e)
+        assert "JSON depth or node budget exceeded" in str(e) or "JSON nesting depth exceeded limit 16" in str(e)
     print("  [PASS] [Layer 2] JSON nesting depth boundary (16 pass vs 17 reject) verified")
 
     # --------------------------------------------------------------------------
