@@ -13,7 +13,6 @@ internal static class Json
         MaxDepth = 32,
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
         PropertyNameCaseInsensitive = false,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
     internal static JsonDocument Parse(byte[] bytes)

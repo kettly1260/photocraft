@@ -31,7 +31,11 @@ internal sealed record V2ServerNegotiation(int selected_wire_version, string[] e
 internal sealed record V2ResourceIdentity(string id, string? version, string? manifest_digest);
 internal sealed record V2DevicePolicy(string mode, string[] allowed_backends, bool allow_graph_fallback);
 internal sealed record V2Port(string kind, int? x, int? y, int width, int height, int channels,
-    string? color_mode, int? source_depth, bool? alpha, string? alpha_type, string? color_encoding, int data_section_index, int? icc_section_index);
+    string? color_mode, int? source_depth, bool? alpha,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? alpha_type,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? color_encoding,
+    int data_section_index,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? icc_section_index);
 internal sealed record V2Device(string id, string kind);
 internal sealed record V2Timing(double cpu_preprocess_ms, double graph_execution_ms, double cpu_postprocess_ms, double total_ms);
 internal sealed record V2Execution(V2DevicePolicy? requested_policy, V2Device[] devices, string backend,
@@ -60,13 +64,13 @@ internal sealed record V2ResponseHeader(
     string type,
     string status,
     string message,
-    string? action = null,
-    string? readiness = null,
-    V2ServerNegotiation? negotiation = null,
-    Dictionary<string, V2Port>? outputs = null,
-    V2Execution? execution = null,
-    V2ErrorDetail? error = null,
-    V2SectionMeta[]? sections = null
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? action = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? readiness = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] V2ServerNegotiation? negotiation = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Dictionary<string, V2Port>? outputs = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] V2Execution? execution = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] V2ErrorDetail? error = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] V2SectionMeta[]? sections = null
 );
 
 internal sealed record V2ParsedRequest(
