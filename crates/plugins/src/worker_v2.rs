@@ -6,8 +6,8 @@
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::adapter::{self, Adapter, Context, Descriptor, Error, Execution, Image, Limits, Output, OutputKind, Request, Response, Result};
+use crate::adapter::{Adapter, Context, Descriptor, Error, Execution, Image, Limits, Output, OutputKind, Request, Response, Result};
 
 pub const REQUEST_MAGIC: &[u8; 8] = b"PCADREQ2";
 pub const RESPONSE_MAGIC: &[u8; 8] = b"PCADRES2";
@@ -298,10 +298,8 @@ fn check_value_bounds(value: &Value, depth: usize) -> Result<()> {
                 check_value_bounds(val, depth + 1)?;
             }
         }
-        Value::String(s) => {
-            if s.chars().count() > MAX_STRING_CHARS {
-                return Err(Error::Limit(format!("JSON string character length budget exceeded ({})", s.len())));
-            }
+        Value::String(s) if s.chars().count() > MAX_STRING_CHARS => {
+            return Err(Error::Limit(format!("JSON string character length budget exceeded ({})", s.len())));
         }
         _ => {}
     }
@@ -342,10 +340,10 @@ pub fn read_v2_frame_bounded<R: Read>(reader: &mut R, expected_magic: &[u8; 8]) 
     for i in 0..section_count {
         let mut entry_buf = [0u8; 16];
         reader.read_exact(&mut entry_buf).map_err(|e| Error::Failed(format!("Failed to read section {i} entry: {e}")))?;
-        let kind = u32::from_le_bytes(entry_buf[0..4].try_into().unwrap());
-        let reserved = u32::from_le_bytes(entry_buf[4..8].try_into().unwrap());
-        let offset = u32::from_le_bytes(entry_buf[8..12].try_into().unwrap());
-        let length = u32::from_le_bytes(entry_buf[12..16].try_into().unwrap());
+        let kind = u32::from_le_bytes([entry_buf[0], entry_buf[1], entry_buf[2], entry_buf[3]]);
+        let reserved = u32::from_le_bytes([entry_buf[4], entry_buf[5], entry_buf[6], entry_buf[7]]);
+        let offset = u32::from_le_bytes([entry_buf[8], entry_buf[9], entry_buf[10], entry_buf[11]]);
+        let length = u32::from_le_bytes([entry_buf[12], entry_buf[13], entry_buf[14], entry_buf[15]]);
 
         if reserved != 0 {
             return Err(Error::Failed(format!("Section {i} reserved field is non-zero: {reserved}")));
@@ -444,10 +442,8 @@ pub struct WorkerAdapterV2 {
 }
 
 impl WorkerAdapterV2 {
-    pub fn new(executable: PathBuf, mut descriptor: Descriptor, timeout: Duration) -> Result<Self> {
-        if let Err(error) = Limits::default().check_params(&descriptor.params_schema) {
-            return Err(error);
-        }
+    pub fn new(executable: PathBuf, descriptor: Descriptor, timeout: Duration) -> Result<Self> {
+        Limits::default().check_params(&descriptor.params_schema)?;
         if !(Duration::from_millis(1000)..=Duration::from_millis(300000)).contains(&timeout) {
             return Err(Error::Failed("worker timeout must be 1000..=300000 ms".into()));
         }
@@ -767,9 +763,10 @@ impl Adapter for WorkerAdapterV2 {
             return Err(Error::InvalidResponse("Mask section byte length is not a multiple of 4".into()));
         }
 
-        let mask_floats: Vec<f32> = sec_bytes
-            .chunks_exact(4)
-            .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap_or([0; 4])))
+        let (chunks, _) = sec_bytes.as_chunks::<4>();
+        let mask_floats: Vec<f32> = chunks
+            .iter()
+            .map(|chunk| f32::from_le_bytes(*chunk))
             .collect();
 
         let mask_pixels = (mask_port.width as usize) * (mask_port.height as usize);
