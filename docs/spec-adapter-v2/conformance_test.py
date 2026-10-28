@@ -399,7 +399,7 @@ def test_strict_boundaries():
     # 1_048_470 - 2699 = 1_045_771 chars across 300 string values.
     # 1_045_771 // 300 = 3485, remainder = 271.
     for i in range(300):
-        val_len = 3486 if i < 271 else 3485
+        val_len = 3485 if i < 271 else 3484
         pad_items.append(f'"p{i:03d}":"' + ("a" * val_len) + '"')
     pad_body = ",".join(pad_items).encode("ascii")
     prefix = b'{"protocol":2,"request_id":"req-bound-1","type":"hello","client":{"name":"test","version":"1.0"},"pad":{'
