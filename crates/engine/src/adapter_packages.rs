@@ -230,7 +230,7 @@ impl VerifiedWorker {
             let models_reg_path = directory.join("qnn-models.json");
             if let Ok(content) = std::fs::read_to_string(&models_reg_path) {
                 if let Ok(reg) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(profile) = reg.get("profiles").and_then(|p| p.get(0)) {
+                    if let Some(profile) = reg.get("profiles").and_then(|p| p.as_array()).and_then(|a| a.first()) {
                         let id = profile.get("id").and_then(|v| v.as_str()).unwrap_or("");
                         let digest = profile.get("sha256").and_then(|v| v.as_str()).unwrap_or("");
                         if !id.is_empty() {

@@ -2,16 +2,14 @@
 //! and request/response serialization.
 #![cfg(not(target_arch = "wasm32"))]
 
-use std::collections::BTreeMap;
 use std::io::Cursor;
 use std::path::PathBuf;
 use std::time::Duration;
 use photocraft_plugins::adapter::{Adapter, Context, Descriptor, Error, Image, OutputKind, Request};
 use photocraft_plugins::worker_v2::{
     decode_v2_frame, encode_v2_frame, read_v2_frame_bounded, validate_json_bounds,
-    SectionEntry, V2ClientNegotiation, V2DevicePolicy, V2HelloRequest, V2HelloResponse,
-    V2Port, V2ResourceIdentity, V2RunRequest, V2RunResponse, V2SectionMeta, V2ServerNegotiation,
-    V2StatusResponse, WorkerAdapterV2, KIND_F32, MAX_HEADER_BYTES, MAX_JSON_DEPTH, MAX_PAYLOAD_BYTES, MAX_SECTIONS,
+    SectionEntry, V2ClientNegotiation, V2HelloRequest, V2ResourceIdentity,
+    V2StatusResponse, WorkerAdapterV2, KIND_F32, MAX_HEADER_BYTES, MAX_PAYLOAD_BYTES, MAX_SECTIONS,
     REQUEST_MAGIC, RESPONSE_MAGIC,
 };
 
