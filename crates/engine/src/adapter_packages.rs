@@ -494,6 +494,7 @@ fn check_status(s: &mut Session, p: &Value, prepare: bool) -> Result<Value> {
     let record = entry.record.clone();
     let worker = VerifiedWorker::new(&record, s.adapter_packages.directory(&id)?)?;
     let label = if prepare { "Prepare Adapter Model" } else { "Check Adapter Availability" };
+    let resource_id = record.manifest.descriptor.id.clone();
     crate::jobs::run(
         s,
         label,
@@ -510,11 +511,10 @@ fn check_status(s: &mut Session, p: &Value, prepare: bool) -> Result<Value> {
                     }
                 }
                 InnerWorker::V2(w) => {
-                    let resource_id = &record.manifest.descriptor.id;
                     let result = if prepare {
-                        w.prepare(resource_id, None, &context)
+                        w.prepare(&resource_id, None, &context)
                     } else {
-                        w.probe(resource_id, None, &context)
+                        w.probe(&resource_id, None, &context)
                     };
                     match result {
                         Ok(status) => json!({
