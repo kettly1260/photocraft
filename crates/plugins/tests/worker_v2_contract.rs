@@ -260,7 +260,7 @@ fn rust_csharp_v2_process_interop_regression() {
     // 1. Setup synthetic model fixture beside the executable
     let setup_status = std::process::Command::new(&worker_exe)
         .arg("--setup-synthetic")
-        .arg(exe_dir)
+        .arg(&exe_dir)
         .status()
         .expect("execute --setup-synthetic");
     assert!(setup_status.success(), "--setup-synthetic failed");
