@@ -233,7 +233,7 @@ fn rust_csharp_v2_process_interop_regression() {
             .prefix("photocraft-qnn-interop-")
             .tempdir()
             .expect("create tempdir");
-        let build_out = temp_build.keep().expect("persist tempdir").join("bin");
+        let build_out = temp_build.keep().join("bin");
 
         let build_status = std::process::Command::new("dotnet")
             .arg("build")
