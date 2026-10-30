@@ -1082,4 +1082,3 @@ fn refine_edge_rejects_bad_edits_and_keeps_the_selection() {
         assert!(Arc::ptr_eq(&before, &s.active().unwrap().doc));
         assert!(adapter.requests().is_empty());
     }
-}

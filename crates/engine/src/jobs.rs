@@ -1262,6 +1262,7 @@ mod adapter_input_drop_tests {
     }
 }
 
+#[cfg(test)]
 #[path = "../../io/tests/support/recovery_psd.rs"]
 mod psd_open_fixture;
 
