@@ -5,7 +5,9 @@
 use std::io::Cursor;
 use std::path::PathBuf;
 use std::time::Duration;
-use photocraft_plugins::adapter::{Adapter, Context, Descriptor, Error, Image, OutputKind, Request};
+use photocraft_plugins::adapter::{
+    Adapter, Context, Descriptor, Error, Image, Operation, OutputKind, Request, API_VERSION,
+};
 use photocraft_plugins::worker_v2::{
     decode_v2_frame, encode_v2_frame, read_v2_frame_bounded, validate_json_bounds,
     SectionEntry, V2ClientNegotiation, V2HelloRequest, V2ResourceIdentity,
@@ -231,7 +233,7 @@ fn rust_csharp_v2_process_interop_regression() {
             .prefix("photocraft-qnn-interop-")
             .tempdir()
             .expect("create tempdir");
-        let build_out = temp_build.into_path().join("bin");
+        let build_out = temp_build.keep().expect("persist tempdir").join("bin");
 
         let build_status = std::process::Command::new("dotnet")
             .arg("build")
@@ -264,17 +266,21 @@ fn rust_csharp_v2_process_interop_regression() {
     assert!(setup_status.success(), "--setup-synthetic failed");
 
     let descriptor = Descriptor {
+        api_version: API_VERSION,
+        id: "test-qnn-adapter".into(),
         name: "test-qnn-adapter".into(),
         version: "2.0.0".into(),
-        author: "PhotoCraft Contributors".into(),
-        description: "V2 Test Adapter".into(),
-        operations: vec!["select-subject".into()],
+        operations: vec![Operation {
+            id: "select-subject".into(),
+            output_kind: OutputKind::Mask,
+            color_modes: vec!["rgb".into()],
+        }],
+        devices: vec![],
+        resource_formats: vec![],
         params_schema: serde_json::json!({
             "type": "object",
             "properties": {}
         }),
-        requires_image: true,
-        devices: vec![],
     };
 
     let mut adapter = WorkerAdapterV2::new(worker_exe, descriptor, Duration::from_secs(30))
