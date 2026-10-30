@@ -676,6 +676,7 @@ fn refine_edge_rejects_bad_edits_and_keeps_the_selection() {
     }
 }
     use photocraft_plugins::adapter::{Adapter, Context, Descriptor, Device, DeviceKind, Execution, Operation, Output, Response};
+    use std::sync::{Arc, Mutex, PoisonError};
 
     const CPU_DEVICE: &str = "cpu.synthetic.0";
     const CPU_DEVICE_2: &str = "cpu.synthetic.1";
