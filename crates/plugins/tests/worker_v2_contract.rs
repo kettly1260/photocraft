@@ -255,7 +255,7 @@ fn rust_csharp_v2_process_interop_regression() {
         exe
     };
 
-    let exe_dir = worker_exe.parent().expect("resolve worker exe directory");
+    let exe_dir = worker_exe.parent().expect("resolve worker exe directory").to_path_buf();
 
     // 1. Setup synthetic model fixture beside the executable
     let setup_status = std::process::Command::new(&worker_exe)
