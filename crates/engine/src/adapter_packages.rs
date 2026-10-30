@@ -295,7 +295,7 @@ impl PackageStore {
                 Launch::Executable { path } => path.clone(),
                 Launch::ExecutionAlias { alias } => format!("Windows packaged application alias: {alias}"),
             };
-            json!({"id":m.descriptor.id,"name":m.descriptor.name,"version":m.descriptor.version,"enabled":entry.record.enabled,"descriptor":m.descriptor,"launch":launch,"status":entry.status})
+            json!({"id":m.descriptor.id,"name":m.descriptor.name,"version":m.descriptor.version,"package_version":m.package_version,"enabled":entry.record.enabled,"descriptor":m.descriptor,"launch":launch,"status":entry.status})
         }).collect();
         json!({"available":self.root.is_some(),"packages":rows,"warnings":self.warnings})
     }
@@ -647,11 +647,12 @@ mod tests {
 
         let mut s = Session::new();
         s.attach_adapter_directory(data.path().join("Adapters")).unwrap();
-        let result = s.execute("plugin.adapter.install", json!({"path": path, "trust": true})).unwrap();
-        assert_eq!(result["packages"][0]["enabled"], serde_json::Value::Bool(false));
-        assert_eq!(result["packages"][0]["manifest"]["package_version"], 2);
-
         let id = m2.descriptor.id.clone();
+        let result = s.execute("plugin.adapter.install", json!({"path": path, "trust": true})).unwrap();
+        assert_eq!(result["packages"][0]["enabled"], false);
+        assert_eq!(result["packages"][0]["package_version"], 2);
+        assert_eq!(s.adapter_packages.packages.get(&id).unwrap().record.manifest.package_version, 2);
+
         s.execute("plugin.adapter.enable", json!({"provider": id, "enabled": true})).unwrap();
         assert!(s.adapters.get(&id).is_some());
 
