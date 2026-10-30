@@ -313,7 +313,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         let mut open = true;
         let mut action = None;
         let mut browse = false;
-        egui::Window::new(MENU_LABEL).id(egui::Id::new(MENU_ID)).open(&mut open).default_width(660.0).min_width(300.0).vscroll(true).show(ctx, |ui| {
+        egui::Window::new(MENU_LABEL).id(egui::Id::unique(MENU_ID)).open(&mut open).default_width(660.0).min_width(300.0).vscroll(true).show(ctx, |ui| {
             if cfg!(target_arch = "wasm32") {
                 ui.label(
                     "Native compatibility adapters are unsupported in the browser. Use the native PhotoCraft application to install and enable an adapter.",
