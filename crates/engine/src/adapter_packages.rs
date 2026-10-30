@@ -228,19 +228,19 @@ impl VerifiedWorker {
             let mut v2 = WorkerAdapterV2::new(executable, record.manifest.descriptor.clone(), timeout).map_err(adapter_error)?;
             // Attempt to bind resource identity from actual selected model profile in the package directory
             let models_reg_path = directory.join("qnn-models.json");
-            if let Ok(content) = std::fs::read_to_string(&models_reg_path) {
-                if let Ok(reg) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(profile) = reg.get("profiles").and_then(|p| p.as_array()).and_then(|a| a.first()) {
-                        let id = profile.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                        let digest = profile.get("sha256").and_then(|v| v.as_str()).unwrap_or("");
-                        if !id.is_empty() {
-                            v2.set_resource_identity(photocraft_plugins::worker_v2::V2ResourceIdentity {
-                                id: id.to_string(),
-                                version: "1.0.0".to_string(),
-                                manifest_digest: digest.to_string(),
-                            });
-                        }
-                    }
+            let profile_opt = std::fs::read_to_string(&models_reg_path)
+                .ok()
+                .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+                .and_then(|reg| reg.get("profiles")?.as_array()?.first().cloned());
+            if let Some(profile) = profile_opt {
+                let id = profile.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let digest = profile.get("sha256").and_then(|v| v.as_str()).unwrap_or("");
+                if !id.is_empty() {
+                    v2.set_resource_identity(photocraft_plugins::worker_v2::V2ResourceIdentity {
+                        id: id.to_string(),
+                        version: "1.0.0".to_string(),
+                        manifest_digest: digest.to_string(),
+                    });
                 }
             }
             InnerWorker::V2(v2)
